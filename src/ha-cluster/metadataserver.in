@@ -60,7 +60,7 @@ read_cfg_var() {
 
 # Parameters for this resource agent, with default values
 
-OCF_RESKEY_master_cfg_default=@ETC_PATH@/mfs/mfsmaster.cfg
+OCF_RESKEY_master_cfg_default=/etc/mfs/mfsmaster.cfg
 
 : ${OCF_RESKEY_master_cfg:=$OCF_RESKEY_master_cfg_default}
 
@@ -77,12 +77,12 @@ metadata_version_attribute_name="lizardfs-metadata-version"
 
 failover_ip=$(read_cfg_var ${OCF_RESKEY_master_cfg} MASTER_HOST)
 admin_password=$(read_cfg_var ${OCF_RESKEY_master_cfg} ADMIN_PASSWORD)
-data_dir=$(read_cfg_var ${OCF_RESKEY_master_cfg} DATA_PATH = @DATA_PATH@)
+data_dir=$(read_cfg_var ${OCF_RESKEY_master_cfg} DATA_PATH = /var/lib/mfs)
 matocl_host=$(read_cfg_var ${OCF_RESKEY_master_cfg} MATOCL_LISTEN_HOST = '*')
 matocl_port=$(read_cfg_var ${OCF_RESKEY_master_cfg} MATOCL_LISTEN_PORT = 9421)
-lizardfs_user=$(read_cfg_var ${OCF_RESKEY_master_cfg} WORKING_USER = @DEFAULT_USER@)
-lizardfs_group=$(read_cfg_var ${OCF_RESKEY_master_cfg} WORKING_GROUP = @DEFAULT_GROUP@)
-exports_cfg=$(read_cfg_var ${OCF_RESKEY_master_cfg} WORKING_GROUP = @ETC_PATH@/mfs/mfsexports.cfg)
+lizardfs_user=$(read_cfg_var ${OCF_RESKEY_master_cfg} WORKING_USER = mfs)
+lizardfs_group=$(read_cfg_var ${OCF_RESKEY_master_cfg} WORKING_GROUP = mfs)
+exports_cfg=/etc/mfs/mfsexports.cfg
 
 master_metadata=${data_dir}/metadata.mfs
 master_lock=${data_dir}/metadata.mfs.lock
