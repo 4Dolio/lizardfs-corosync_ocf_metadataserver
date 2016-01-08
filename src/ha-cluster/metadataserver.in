@@ -353,25 +353,12 @@ lizardfs_probe() {
 		host=$matocl_host
 	fi
 # Send any errors to /tmp/lizardfs_probe for later examination
-	results=`lizardfs-admin metadataserver-status --porcelain "${host}" "$matocl_port" 2>|/tmp/lizardfs_probe`
+	probe_results=$(lizardfs-admin metadataserver-status --porcelain "${host}" "$matocl_port" 2>|/tmp/lizardfs_probe)
         ret=$?
-## Prior to capturing the results= of the lizardfs-admin metadataserver-status command it is possible to exit(0) while stopping
-## Error: Can't connect to 127.0.0.1:9421: ENOTCONN (Transport endpoint is not connected)  #### exit(0) While Stopping
-## Error: Can't read data from socket: timeout                                             #### exit(1) While Starting during newly downloaded metadata from master server
         if [ $ret -eq 0 ] ; then
-# Exit was 0, but if an error included ENOTCONN then the shadow service is attempting to stop cleanly, wait for it
-## After capturing the results= of the lizardfs-admin metadataserver-status command, this state should never be encountered
-		if [ `grep -c ENOTCONN /tmp/lizardfs_probe` -gt 0 ] ; then
-			echo -e "shadow\tstopping"
-		else
-# Exit was 0 && no exit error so return the normal probe results
-## metadataserver[000]: DEBUG: running in shadow mode, have latest metadata: 123456789 ## If the cluster is idle and there have been no changes.
-## metadataserver[000]: DEBUG: running in shadow mode, no metadata # If the cluster is active and the metadata version has increased.
-			echo "$results"
-		fi
-# Else, Exit code 1, so we might be stopping or syncing (starting and processing newly acquired metadata from the master server)
+		echo "$probe_results"
 	else
-# Error output included ENOTCONN so the shadow service is stopping, return a unique response
+# Error output included ENOTCONN so the shadow service is stopping, everything is ok, just wait.
 		if [ `grep -c ENOTCONN /tmp/lizardfs_probe` -gt 0 ] ; then
 			echo -e "shadow\tstopping"
 # Check for recent file activity and return a unique response if there is file activity in the last minute.
@@ -382,6 +369,7 @@ lizardfs_probe() {
 # else we returned nothing? shrugs
 # Verified `killall mfsmaster` externally kills mfsmaster that corosync will wait for a clean exit and then start shadow master again.
 # Verified `killall -9 mfsmaster` (Crash) kills mfsmaster than `mfsmetarestore -a ; crm resource cleanup lizardfs-ms` is needed to restore node.
+# If mfsmaster is killed externally then pacemaker may "lose track" of the process? causing pacemaker to not attempt to stop it when pacemaker is stopped.
 }
 
 update_master_score() {
