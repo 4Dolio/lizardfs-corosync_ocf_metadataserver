@@ -82,7 +82,8 @@ matocl_host=$(read_cfg_var ${OCF_RESKEY_master_cfg} MATOCL_LISTEN_HOST = '*')
 matocl_port=$(read_cfg_var ${OCF_RESKEY_master_cfg} MATOCL_LISTEN_PORT = 9421)
 lizardfs_user=$(read_cfg_var ${OCF_RESKEY_master_cfg} WORKING_USER = mfs)
 lizardfs_group=$(read_cfg_var ${OCF_RESKEY_master_cfg} WORKING_GROUP = mfs)
-exports_cfg=/etc/mfs/mfsexports.cfg
+exports_cfg=$(read_cfg_var ${OCF_RESKEY_master_cfg} EXPORTS_FILENAME = /etc/mfs/mfsexports.cfg)
+debug_state_change_cfg=$(read_cfg_var ${OCF_RESKEY_master_cfg} DEBUG_STATE_CHANGE = /tmp)
 
 master_metadata=${data_dir}/metadata.mfs
 master_lock=${data_dir}/metadata.mfs.lock
@@ -164,6 +165,7 @@ lizardfs_master() {
 	local command=$1
 	local personality=$2
 	mfsmaster -c "$OCF_RESKEY_master_cfg" -o ha-cluster-managed -o initial-personality="${personality}" "${command}"
+#	touch $debug_state_change_cfg/lfs-`date +\%Y\%m\%d.\%H\%M\%S`-M_${personality}_${command}
 }
 
 # Actions
@@ -190,7 +192,7 @@ lizardfs_master_start_shadow() {
 	# slave state, which means starting a shadow master.
 
 	ocf_run lizardfs_master start shadow
-	touch /tmp/lfs-`date +\%Y\%m\%d.\%H\%M\%S`-StartShadow
+	touch $debug_state_change_cfg/lfs-`date +\%Y\%m\%d.\%H\%M\%S`-StartS
 }
 
 metadataserver_really_stop() {
@@ -198,7 +200,7 @@ metadataserver_really_stop() {
 		return $OCF_SUCCESS
 	else
 		ocf_log warn "failed to stop LizardFS metadata server, killing instead"
-		touch /tmp/lfs-`date +\%Y\%m\%d.\%H\%M\%S`-Kill
+		touch $debug_state_change_cfg/lfs-`date +\%Y\%m\%d.\%H\%M\%S`-Kill
 		if ocf_run lizardfs_master kill ; then
 			return $OCF_SUCCESS
 		else
@@ -213,7 +215,7 @@ lizardfs_master_stop() {
 	case $? in
 		$OCF_RUNNING_MASTER|$OCF_SUCCESS)
 			ocf_log debug "trying to gracefully shutdown LizardFS metadata server"
-			touch /tmp/lfs-`date +\%Y\%m\%d.\%H\%M\%S`-Stop
+			touch $debug_state_change_cfg/lfs-`date +\%Y\%m\%d.\%H\%M\%S`-Stop
 			metadataserver_really_stop
 		;;
 		$OCF_NOT_RUNNING)
@@ -248,7 +250,7 @@ lizardfs_master_promote() {
 
 			if [[ "${promote_mode}" == "restart" ]] ; then
 				ocf_log debug "running in shadow mode on cluster with no master, doing full restart"
-				touch /tmp/lfs-`date +\%Y\%m\%d.\%H\%M\%S`-FirstMaster
+				touch $debug_state_change_cfg/lfs-`date +\%Y\%m\%d.\%H\%M\%S`-Master1
 				if ! ( ocf_run lizardfs_master stop master && unlink "${master_lock}" && ocf_run lizardfs_master start master ) ; then
 					ocf_log error "Failed to restart into master mode"
 					return $OCF_FAILED_MASTER
@@ -269,7 +271,7 @@ lizardfs_master_promote() {
 			case $ret in
 				$OCF_RUNNING_MASTER)
 					ocf_log info "LizardFS metadata server promoted successfully"
-					touch /tmp/lfs-`date +\%Y\%m\%d.\%H\%M\%S`-Promote
+					touch $debug_state_change_cfg/lfs-`date +\%Y\%m\%d.\%H\%M\%S`-Promote
 					return $OCF_SUCCESS
 				;;
 				*)  ocf_log err "LizardFS metadata server failed to promote"
@@ -320,7 +322,7 @@ lizardfs_master_demote() {
 		$OCF_RUNNING_MASTER)
 			ocf_log debug "LizardFS metadata server running as master, demoting"
 			ocf_run lizardfs_admin_quick_stop && unlink "${master_lock}" # May refuse if there are no shadows present, but that is ok
-			touch /tmp/lfs-`date +\%Y\%m\%d.\%H\%M\%S`-Demote
+			touch $debug_state_change_cfg/lfs-`date +\%Y\%m\%d.\%H\%M\%S`-Demote
 		;;
 		$OCF_SUCCESS)
 			ocf_log info "LizardFS metadata server already a shadow master"
@@ -335,7 +337,7 @@ lizardfs_master_demote() {
 
 # Do not bother to start the shadow again, trying to do so just causes the demotion to fail.
 	return $OCF_SUCCESS # so return now.
-# perhaps we could call the lizardfs_master_start_shadow function with more success
+# Perhaps we could call the lizardfs_master_start_shadow function with more success
 	if ! ocf_run lizardfs_master start shadow ; then # This was originally a restart which does not make sense if we just stopped.
 		ocf_log error "Failed to start shadow master, demotion failed"
 		return $OCF_ERR_GENERIC
@@ -362,28 +364,38 @@ lizardfs_probe() {
 	else
 		host=$matocl_host
 	fi
-# Send any errors to /tmp/lizardfs_probe for later examination
-	probe_results=$(lizardfs-admin metadataserver-status --porcelain "${host}" "$matocl_port" 2>|/tmp/lizardfs_probe)
+# Error: Can't connect to 127.0.0.1:9421: ENOTCONN (Transport endpoint is not connected) ##### While stopping shadow master, stopping initial master, or starting initial master
+# Error: Can't read data from socket: timeout ##### While starting shadow master and reintegrating new metadata received from master
+# Send errors to stdin so we can use them to determin status of service which is not directly responding to the network probes
+	probe_results=$(lizardfs-admin metadataserver-status --porcelain "${host}" "$matocl_port" 2>&1)
         ret=$?
-        if [ $ret -eq 0 ] ; then
+        if [ $ret -eq 0 ] ; then # exited clean, just return the results
 		echo "$probe_results"
-	else
-# Error output included ENOTCONN so the shadow service is stopping, everything is ok, just wait.
-# This state could mean that the "shadow is stopping" or that the "master is starting", figure out how to tell them apart.
-		if [ `grep -c ENOTCONN /tmp/lizardfs_probe` -gt 0 ] ; then
+	else # existed with an error, make some assumptions
+		if   [[ "$probe_results" =~ "ENOTCONN" ]] && [[ ! -z `pgrep -f "initial-personality=shadow start"` ]] ; then
 			echo -e "shadow\tstopping"
-# Check for recent file activity and return a unique response if there is file activity in the last minute.
-		elif [ ! -z 'find ${data_dir}/ -mmin -1' ] ; then
+# Can not rely on checking for recent file activity.
+#		elif [ ! -z `find ${data_dir}/ -mmin -1`    ] ; then # Watch for any 1 minute or newer files
+#		elif [ ! -z `find ${data_dir}/ -mmin -0.02` ] ; then # Watch for any ~1second or newer files
+		elif [[ "$probe_results" =~ "ENOTCONN" ]] && [[ ! -z `pgrep -f "initial-personality=master start"` ]] ; then
+			echo -e "master\tstopping"
+# Can not determin the difference between stopping and starting master service.
+#			echo -e "master\tstarting"
+		elif [[ "$probe_results" =~ "read data from socket: timeout" ]] && [[ ! -z `pgrep -f "initial-personality=shadow start"` ]] ; then
 			echo -e "shadow\tsyncing"
+#		elif [[ ! -z `pgrep -f "initial-personality=shadow start"` ]] ; then
+#			echo -e "shadow\tsyncing"
+		else
+			echo -e "shadow\tunknown"
 		fi
 	fi
-# else we returned nothing?
 }
 
 lizardfs_admin_quick_stop() {
 	# Stop metadata server without saving metadata to file
 	echo -n "${admin_password}" | \
-			lizardfs-admin stop-master-without-saving-metadata "${matocl_host}" "$matocl_port"
+		lizardfs-admin stop-master-without-saving-metadata "${matocl_host}" "$matocl_port"
+	touch $debug_state_change_cfg/lfs-`date +\%Y\%m\%d.\%H\%M\%S`-QStop
 }
 
 update_master_score() {
@@ -431,8 +443,18 @@ lizardfs_master_monitor() {
 				set_metadata_version "${metadata_version}"
 				return $OCF_RUNNING_MASTER
 			;;
+			master/stopping)
+				ocf_log debug "running in master mode and stopping or starting."
+				update_master_score ${score_shadow_no_metadata}
+				return $OCF_SUCCESS
+			;;
+#			master/starting)
+#				ocf_log debug "running in master mode starting up."
+#				update_master_score ${score_shadow_no_metadata}
+#				return $OCF_SUCCESS
+#			;;
 			shadow/stopping)
-				ocf_log debug "running in shadow mode and stopping, or running in master mode and starting."
+				ocf_log debug "running in shadow mode and stopping."
 				# Do not promote shadow if it is shutting down.
 				update_master_score ${score_shadow_no_metadata}
 				return $OCF_SUCCESS
@@ -503,6 +525,7 @@ lizardfs_master_reload() {
 		$OCF_RUNNING_MASTER|$OCF_SUCCESS)
 			ocf_log debug "reloading LizardFS metadata server configuration"
 			if ocf_run lizardfs_master reload ; then
+				touch $debug_state_change_cfg/lfs-`date +\%Y\%m\%d.\%H\%M\%S`-Reload
 				return $OCF_SUCCESS
 			else
 				return $OCF_ERR_GENERIC
