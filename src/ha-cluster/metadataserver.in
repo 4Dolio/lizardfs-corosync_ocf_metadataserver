@@ -354,37 +354,39 @@ lizardfs_probe() {
 	fi
 # Send any errors to /tmp/lizardfs_probe for later examination
 	results=`lizardfs-admin metadataserver-status --porcelain "${host}" "$matocl_port" 2>|/tmp/lizardfs_probe`
-# Capture the exit code from this probe command, 0 exited cleanly, but....
         ret=$?
 ## Prior to capturing the results= of the lizardfs-admin metadataserver-status command it is possible to exit(0) while stopping
 ## Error: Can't connect to 127.0.0.1:9421: ENOTCONN (Transport endpoint is not connected)  #### exit(0) While Stopping
 ## Error: Can't read data from socket: timeout                                             #### exit(1) While Starting during newly downloaded metadata from master server
         if [ $ret -eq 0 ] ; then
-# Exit was 0, but if an error included ENOTCONN then the shadow service is stoping, return a unique response
-## metadataserver[000]: DEBUG: running in shadow mode, latest metadata is not available: 3 < 1098959141
+# Exit was 0, but if an error included ENOTCONN then the shadow service is stopping, return a unique response
+## metadataserver[000]: DEBUG: running in shadow mode, latest metadata is not available: 3 < 123456789
 ## After capturing the results= of the lizardfs-admin metadataserver-status command, this state should never be encountered
 		if [ `grep -c ENOTCONN /tmp/lizardfs_probe` -gt 0 ] ; then
 			echo -e "shadow\tstopping\t3"
 		else
-# Exit was 0, no error so return the normal probe results
-## metadataserver[000]: DEBUG: running in shadow mode, have latest metadata: 1098959141 ## If the cluster is idle and there have been no changes.
+# Exit was 0 && no error so return the normal probe results
+## metadataserver[000]: DEBUG: running in shadow mode, have latest metadata: 123456789 ## If the cluster is idle and there have been no changes.
 ## metadataserver[000]: DEBUG: running in shadow mode, no metadata # If the cluster is active and the metadata version has increased.
 			echo "$results"
 		fi
-# Exit was 1, so we might be stopping or starting and processing newly aquired metadata from the master server.
+# Else, Exit was 1, so we might be stopping or starting and processing newly acquired metadata from the master server.
 	else
-# Error output included ENOTCONN so the shadow service is stoping, return a unique response
-## metadataserver[000]: DEBUG: running in shadow mode, latest metadata is not available: 2 < 1098959141
+# Error output included ENOTCONN so the shadow service is stopping, return a unique response
+## metadataserver[000]: DEBUG: running in shadow mode, latest metadata is not available: 2 < 123456789
 		if [ `grep -c ENOTCONN /tmp/lizardfs_probe` -gt 0 ] ; then
 			echo -e "shadow\tstopping\t2"
 # Check for recent file activity and return a unique response if there is file activity in the last minute.
-## metadataserver[000]: DEBUG: running in shadow mode, latest metadata is not available: 1 < 1098959141
-# Verified that is `killall mfsmaster` this "unexpected output from lizardfs-admin:" will at least keep corosync from acting until the shutdown exits cleanly.
+## metadataserver[000]: DEBUG: running in shadow mode, latest metadata is not available: 1 < 123456789
 		elif [ ! -z 'find ${data_dir}/ -mmin -1' ] ; then
-			echo -e "shadow\tconnected\t1"
+			echo -e "shadow\tsyncing\t1"
 		fi
 	fi
 # else we returned nothing? shrugs
+# Verified `killall mfsmaster` externally kills mfsmaster that corosync will now wait for a clean exit and then start shadow master again.
+# Verified `killall -9 mfsmaster` (Crash) kills mfsmaster than `mfsmetarestore -a ; crm resource cleanup lizardfs-ms` is needed to restore node.
+##### Would be better to handle "shadow\tstopping\t0" and "shadow\tsyncing\t0" with unique DEBUG: output indicating we are stopping or syncing
+##### Until then I like to see "1 < 123456789" indicating we are syncing and "2 < 123456789" indicating we are stopping...
 }
 
 update_master_score() {
@@ -432,7 +434,19 @@ lizardfs_master_monitor() {
 				set_metadata_version "${metadata_version}"
 				return $OCF_RUNNING_MASTER
 			;;
-			shadow/connected|shadow/disconnected|shadow/stopping)
+			shadow/stopping)
+				ocf_log debug "running in shadow mode, service is stopping."
+				# Do not promote shadow if it is shutting down.
+				update_master_score ${score_shadow_no_metadata}
+				return $OCF_SUCCESS
+			;;
+			shadow/syncing)
+				ocf_log debug "running in shadow mode, syncing up with master."
+				# Do not promote shadow which is syncing up to the master during startup
+				update_master_score ${score_shadow_no_metadata}
+				return $OCF_SUCCESS
+			;;
+			shadow/connected|shadow/disconnected)
 				local cluster_metadata_version=$(get_metadata_version)
 				if [[ ( $? != 0 ) || ( ${cluster_metadata_version} == "" ) ]] ; then
 					ocf_log error "Failed to obtain metadata version from cluster."
