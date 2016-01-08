@@ -239,10 +239,10 @@ lizardfs_master_start_shadow() {
 	# When the start action is called, we are supposed to start in the
 	# slave state, which means starting a shadow master.
 
-	ocf_run lizardfs_master start shadow
 	msg="starting LizardFS metadata server as shadow master"
 	ocf_log info "$msg" ; test $debug && ocf_log notice "$msg"
 	test $debug && touch $debug_state_change_logs/lfs-`date +\%Y\%m\%d.\%H\%M\%S`-StartS
+	ocf_run lizardfs_master start shadow
 }
 
 metadataserver_really_stop() {
@@ -438,6 +438,7 @@ lizardfs_master_demote() {
 			ocf_log debug "$msg" ; test $debug && ocf_log notice "$msg"
 	test $debug && touch $debug_state_change_logs/lfs-`date +\%Y\%m\%d.\%H\%M\%S`-Demote
 			ocf_run lizardfs_admin_quick_stop && unlink "${master_lock}"
+## TODO look into if the exit code from the quick stop is important, in which case the unlink exit code may be getting in the way
 		;;
 		$OCF_SUCCESS)
 			msg="LizardFS metadata server already a shadow master"
@@ -522,11 +523,11 @@ lizardfs_probe() {
 
 lizardfs_admin_quick_stop() {
 	# Stop metadata server without saving metadata to file
-	echo -n "${admin_password}" | \
-		lizardfs-admin stop-master-without-saving-metadata "${matocl_host}" "$matocl_port"
 	msg="LizardFS metadata server quickly stopping."
 	ocf_log debug "$msg" ; test $debug && ocf_log notice "$msg"
 	test $debug && touch $debug_state_change_logs/lfs-`date +\%Y\%m\%d.\%H\%M\%S`-QStop
+	echo -n "${admin_password}" | \
+		lizardfs-admin stop-master-without-saving-metadata "${matocl_host}" "$matocl_port"
 }
 
 update_master_score() {
