@@ -262,7 +262,14 @@ lizardfs_master_promote() {
 				fi
 			else
 				ocf_log error "promotion to master was prevented by monitor"
-				return $OCF_SUCCESS
+				ocf_log error "#####"
+				ocf_log error "##### If you would really like this node to become the initial master then you can run these commands:"
+				ocf_log error "##### mfsmetarestore -a ; crm resource cleanup lizardfs-ms # to attempt to cleanup the metadata and clear errors."
+				ocf_log error "##### If you do so you may be reverting to an old metedata set.  Be very sure this is what you want to do."
+				ocf_log error "##### If you just want this node to attempt to rejoin as a shadow then restart or use the cleanup command."
+				ocf_log error "#####"
+				return $OCF_ERR_PERM
+#				return $OCF_SUCCESS
 			fi
 
 			# Check that we are now succesfully a master
@@ -371,22 +378,26 @@ lizardfs_probe() {
         ret=$?
         if [ $ret -eq 0 ] ; then # exited clean, just return the results
 		echo "$probe_results"
-	else # existed with an error, make some assumptions
-		if   [[ "$probe_results" =~ "ENOTCONN" ]] && [[ ! -z `pgrep -f "initial-personality=shadow start"` ]] ; then
+	else # existed with an error, making some reasonable assumptions
+		if   [[ "$probe_results" =~ "ENOTCONN (Transport endpoint is not connected)" ]] && [[ ! -z `pgrep -f "initial-personality=shadow start"` ]] ; then
 			echo -e "shadow\tstopping"
-# Can not rely on checking for recent file activity.
+# Can not rely on checking for recent file activity...
 #		elif [ ! -z `find ${data_dir}/ -mmin -1`    ] ; then # Watch for any 1 minute or newer files
 #		elif [ ! -z `find ${data_dir}/ -mmin -0.02` ] ; then # Watch for any ~1second or newer files
-		elif [[ "$probe_results" =~ "ENOTCONN" ]] && [[ ! -z `pgrep -f "initial-personality=master start"` ]] ; then
+		elif [[ "$probe_results" =~ "ENOTCONN (Transport endpoint is not connected)" ]] && [[ ! -z `pgrep -f "initial-personality=master start"` ]] ; then
 			echo -e "master\tstopping"
-# Can not determin the difference between stopping and starting master service.
+# Can not determine the difference between stopping and starting initial master service, which is fine for now, both are valid.
 #			echo -e "master\tstarting"
 		elif [[ "$probe_results" =~ "read data from socket: timeout" ]] && [[ ! -z `pgrep -f "initial-personality=shadow start"` ]] ; then
 			echo -e "shadow\tsyncing"
 #		elif [[ ! -z `pgrep -f "initial-personality=shadow start"` ]] ; then
 #			echo -e "shadow\tsyncing"
+#		elif [[ "$probe_results" =~ "connection failed, error: ECONNREFUSED (Connection refused)" ]] && [[ ! -z `pgrep -f "initial-personality=shadow start"` ]] ; then
+#				ocf_log error "##### mfsmetarestore -a ; crm resource cleanup lizardfs-ms # to attempt to cleanup the metadata and clear errors."
+#			echo -e "master\tunclean"
+## Attempting to catch the quick stopped master which can only become a shadow or would require mfsmetarestore -a
 		else
-			echo -e "shadow\tunknown"
+			echo -e "unknown\tunknown\t$probe_results"
 		fi
 	fi
 }
@@ -446,7 +457,8 @@ lizardfs_master_monitor() {
 			master/stopping)
 				ocf_log debug "running in master mode and stopping or starting."
 				update_master_score ${score_shadow_no_metadata}
-				return $OCF_SUCCESS
+				return $OCF_RUNNING_MASTER
+#				return $OCF_SUCCESS
 			;;
 #			master/starting)
 #				ocf_log debug "running in master mode starting up."
@@ -490,7 +502,7 @@ lizardfs_master_monitor() {
 					update_master_score ${score_shadow_connected}
 					promote_mode="reload"
 				else
-					ocf_log debug "running in shadow mode, no metadata"
+					ocf_log debug "running in shadow mode, no metadata."
 					# Do not promote shadow with no metadata!
 					update_master_score ${score_shadow_no_metadata}
 				fi
