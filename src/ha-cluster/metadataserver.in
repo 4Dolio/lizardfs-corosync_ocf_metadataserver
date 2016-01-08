@@ -146,19 +146,17 @@ Config file for LizardFS metadata server; will find in config_dir if not specifi
       <content type="string" default="$OCF_RESKEY_master_cfg_default"/>
     </parameter>
   </parameters>
-  <actions>
-    <action name="start"        timeout="45" />
-    <action name="stop"         timeout="45" />
-    <action name="monitor"      timeout="20"
-                                depth="0" interval="20" role="Slave" />
-    <action name="monitor"      timeout="20"
-                                depth="0" interval="10" role="Master" />
+  <actions> 
+    <action name="start"        timeout="1800" />
+    <action name="stop"         timeout="1800" />
+    <action name="monitor"      interval="2" role="Slave"  timeout="40" />
+    <action name="monitor"      interval="1" role="Master" timeout="30" />
     <action name="reload"       timeout="20" />
-    <action name="promote"      timeout="45" />
-    <action name="demote"       timeout="45" />
+    <action name="promote"      timeout="1800" />
+    <action name="demote"       timeout="1800" />
     <!--action name="notify"       timeout="20" /-->
-    <action name="meta-data"    timeout="5" />
-    <action name="validate-all" timeout="5" />
+    <!--<action name="meta-data"    timeout="5" />-->
+    <!--<action name="validate-all" timeout="5" />-->
   </actions>
 </resource-agent>
 EOF
