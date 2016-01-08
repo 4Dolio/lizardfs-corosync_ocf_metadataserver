@@ -338,6 +338,7 @@ lizardfs_master_promote() {
 				msg="running in shadow mode on cluster with no master, doing full restart"
 				ocf_log debug "$msg" ; test $debug && ocf_log notice "$msg"
 	test $debug && touch $debug_state_change_logs/lfs-`date +\%Y\%m\%d.\%H\%M\%S`-Master1
+				do_cleanup=1 # set variable to let us know to do a cleanup
 				if ! ( ocf_run lizardfs_master stop master && unlink "${master_lock}"\
 				 && ocf_run lizardfs_master start master ) ; then
 					msg="Failed to restart into master mode"
@@ -369,6 +370,16 @@ lizardfs_master_promote() {
 					msg="LizardFS metadata server promoted successfully"
 					ocf_log info "$msg" ; test $debug && ocf_log notice "$msg"
 	test $debug && touch $debug_state_change_logs/lfs-`date +\%Y\%m\%d.\%H\%M\%S`-Promote
+					if [[ "${do_cleanup}" == "1" ]] ; then
+# Adding an automated self `crm resource cleanup lizardfs-ms` command once a master succeeds at coming online.
+						msg="In background sleep and run crm resource cleanup lizardfs-ms # in order to allow shadows to rejoin"
+						ocf_log info "$msg" ; test $debug && ocf_log notice "$msg"
+# There may be some sort of race condition happening.  After a cleanup we sometimes see this error:
+# "WARN: decode_transition_key: Bad UUID" related to one of the numbered lizardfs-master:0 resources.
+# With two cluster members, running the cleanup twice seems to always let the cluster end up clean.
+						( sleep 10;crm resource cleanup lizardfs-ms ) &
+						( sleep 20;crm resource cleanup lizardfs-ms ) &
+					fi
 					return $OCF_SUCCESS
 				;;
 				*)	msg="LizardFS metadata server failed to promote"
