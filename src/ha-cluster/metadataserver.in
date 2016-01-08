@@ -386,8 +386,17 @@ lizardfs_master_monitor() {
 		# master
 		probe_result=$(lizardfs_probe)
 		if [ $? -ne 0 ] ; then
+# Failed to query via port.
+# But we might still be starting or stopping...
+# Check if we have a lock file before deciding our state
+		if [ -e "$master_lock" ] ; then
+			ocf_log debug "LizardFS metadata server might be starting or stopping."
+			update_master_score ${score_shadow_no_metadata}
+			return $OCF_RUNNING_MASTER
+		else
 			ocf_log err "failed to query LizardFS master status"
 			return $OCF_ERR_GENERIC
+		fi
 		fi
 		local personality=$(echo "$probe_result" | cut -f1)
 		local connection=$(echo "$probe_result" | cut -f2)
@@ -549,7 +558,7 @@ case "$1" in
 	reload)   lizardfs_master_reload;;
 	promote)  lizardfs_master_promote;;
 	demote)   lizardfs_master_demote;;
-	# notify)   lizardfs_master_notify;;
+	#notify)   lizardfs_master_notify;;
 	# We have already validated by now
 	validate-all) ;;
 	*)        usage; exit $OCF_ERR_UNIMPLEMENTED;;
