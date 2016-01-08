@@ -190,6 +190,7 @@ lizardfs_master_start_shadow() {
 	# slave state, which means starting a shadow master.
 
 	ocf_run lizardfs_master start shadow
+	touch /tmp/lfs-`date +\%Y\%m\%d.\%H\%M\%S`-StartShadow
 }
 
 metadataserver_really_stop() {
@@ -197,6 +198,7 @@ metadataserver_really_stop() {
 		return $OCF_SUCCESS
 	else
 		ocf_log warn "failed to stop LizardFS metadata server, killing instead"
+		touch /tmp/lfs-`date +\%Y\%m\%d.\%H\%M\%S`-Kill
 		if ocf_run lizardfs_master kill ; then
 			return $OCF_SUCCESS
 		else
@@ -211,6 +213,7 @@ lizardfs_master_stop() {
 	case $? in
 		$OCF_RUNNING_MASTER|$OCF_SUCCESS)
 			ocf_log debug "trying to gracefully shutdown LizardFS metadata server"
+			touch /tmp/lfs-`date +\%Y\%m\%d.\%H\%M\%S`-Stop
 			metadataserver_really_stop
 		;;
 		$OCF_NOT_RUNNING)
@@ -245,6 +248,7 @@ lizardfs_master_promote() {
 
 			if [[ "${promote_mode}" == "restart" ]] ; then
 				ocf_log debug "running in shadow mode on cluster with no master, doing full restart"
+				touch /tmp/lfs-`date +\%Y\%m\%d.\%H\%M\%S`-FirstMaster
 				if ! ( ocf_run lizardfs_master stop master && unlink "${master_lock}" && ocf_run lizardfs_master start master ) ; then
 					ocf_log error "Failed to restart into master mode"
 					return $OCF_FAILED_MASTER
@@ -265,6 +269,7 @@ lizardfs_master_promote() {
 			case $ret in
 				$OCF_RUNNING_MASTER)
 					ocf_log info "LizardFS metadata server promoted successfully"
+					touch /tmp/lfs-`date +\%Y\%m\%d.\%H\%M\%S`-Promote
 					return $OCF_SUCCESS
 				;;
 				*)  ocf_log err "LizardFS metadata server failed to promote"
@@ -314,6 +319,8 @@ lizardfs_master_demote() {
 	case $? in
 		$OCF_RUNNING_MASTER)
 			ocf_log debug "LizardFS metadata server running as master, demoting"
+			ocf_run lizardfs_admin_quick_stop && unlink "${master_lock}" # May refuse if there are no shadows present, but that is ok
+			touch /tmp/lfs-`date +\%Y\%m\%d.\%H\%M\%S`-Demote
 		;;
 		$OCF_SUCCESS)
 			ocf_log info "LizardFS metadata server already a shadow master"
@@ -326,7 +333,10 @@ lizardfs_master_demote() {
 		;;
 	esac
 
-	if ! ocf_run lizardfs_master restart shadow ; then
+# Do not bother to start the shadow again, trying to do so just causes the demotion to fail.
+	return $OCF_SUCCESS # so return now.
+# perhaps we could call the lizardfs_master_start_shadow function with more success
+	if ! ocf_run lizardfs_master start shadow ; then # This was originally a restart which does not make sense if we just stopped.
 		ocf_log error "Failed to start shadow master, demotion failed"
 		return $OCF_ERR_GENERIC
 	fi
@@ -359,6 +369,7 @@ lizardfs_probe() {
 		echo "$probe_results"
 	else
 # Error output included ENOTCONN so the shadow service is stopping, everything is ok, just wait.
+# This state could mean that the "shadow is stopping" or that the "master is starting", figure out how to tell them apart.
 		if [ `grep -c ENOTCONN /tmp/lizardfs_probe` -gt 0 ] ; then
 			echo -e "shadow\tstopping"
 # Check for recent file activity and return a unique response if there is file activity in the last minute.
@@ -366,10 +377,13 @@ lizardfs_probe() {
 			echo -e "shadow\tsyncing"
 		fi
 	fi
-# else we returned nothing? shrugs
-# Verified `killall mfsmaster` externally kills mfsmaster that corosync will wait for a clean exit and then start shadow master again.
-# Verified `killall -9 mfsmaster` (Crash) kills mfsmaster than `mfsmetarestore -a ; crm resource cleanup lizardfs-ms` is needed to restore node.
-# If mfsmaster is killed externally then pacemaker may "lose track" of the process? causing pacemaker to not attempt to stop it when pacemaker is stopped.
+# else we returned nothing?
+}
+
+lizardfs_admin_quick_stop() {
+	# Stop metadata server without saving metadata to file
+	echo -n "${admin_password}" | \
+			lizardfs-admin stop-master-without-saving-metadata "${matocl_host}" "$matocl_port"
 }
 
 update_master_score() {
@@ -418,13 +432,13 @@ lizardfs_master_monitor() {
 				return $OCF_RUNNING_MASTER
 			;;
 			shadow/stopping)
-				ocf_log debug "running in shadow mode, service is stopping."
+				ocf_log debug "running in shadow mode and stopping, or running in master mode and starting."
 				# Do not promote shadow if it is shutting down.
 				update_master_score ${score_shadow_no_metadata}
 				return $OCF_SUCCESS
 			;;
 			shadow/syncing)
-				ocf_log debug "running in shadow mode, syncing up with master."
+				ocf_log debug "running in shadow mode, syncing with master."
 				# Do not promote shadow which is syncing up to the master during startup
 				update_master_score ${score_shadow_no_metadata}
 				return $OCF_SUCCESS
@@ -578,7 +592,7 @@ case "$1" in
 	reload)   lizardfs_master_reload;;
 	promote)  lizardfs_master_promote;;
 	demote)   lizardfs_master_demote;;
-	# notify)   lizardfs_master_notify;;
+	notify)   lizardfs_master_notify;;
 	# We have already validated by now
 	validate-all) ;;
 	*)        usage; exit $OCF_ERR_UNIMPLEMENTED;;
