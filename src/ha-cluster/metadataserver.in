@@ -575,7 +575,9 @@ update_master_score() {
 }
 
 set_metadata_version() {
-	msg="LizardFS: setting cluster metadata version: ${1}"
+	local cluster_metadata_version=$(get_metadata_version)
+        metadata_change=$( expr ${metadata_version} - ${cluster_metadata_version} )
+        msg="LizardFS: setting cluster metadata version: ${1} (${metadata_change})"
 	ocf_log debug "$msg" ; test $debug && ocf_log notice "$msg"
 	ocf_run ${HA_SBIN_DIR}/crm_attribute --lifetime=forever --type=crm_config --name=${metadata_version_attribute_name} --update="${1}"
 }
