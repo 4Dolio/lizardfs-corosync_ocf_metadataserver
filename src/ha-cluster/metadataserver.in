@@ -620,7 +620,9 @@ lizardfs_master_monitor() {
 				return $OCF_SUCCESS
 			;;
 			shadow/syncing)
-				msg="running in shadow mode, syncing with master."
+#				rssize=$( ps aux|grep "[m]fsmaster -c"|awk '{print $5}' )
+				rssize=$( ps h -o rss -p `pgrep mfsmaster` 2>/dev/null )
+				msg="running in shadow mode, syncing with master. Local RSS is ${rssize}"
 				ocf_log debug "$msg" ; test $debug && ocf_log notice "$msg"
 				# Do not promote shadow which is syncing up to the master during startup
 				update_master_score ${score_shadow_no_metadata}
@@ -654,7 +656,9 @@ lizardfs_master_monitor() {
 					update_master_score ${score_shadow_connected}
 					promote_mode="reload"
 				else
-					msg="running in shadow mode, no metadata ${local_metadata_version} < ${cluster_metadata_version}."
+					acquired_size=$( stat ${master_metadata}.tmp -c %s 2>/dev/null )
+					previous_size=$( stat ${master_metadata}.1   -c %s 2>/dev/null )
+					msg="running in shadow mode, no metadata ${local_metadata_version} < ${cluster_metadata_version}. Acquiring ${acquired_size}/${previous_size} metadata."
 					ocf_log debug "$msg" ; test $debug && ocf_log notice "$msg"
 					# Do not promote shadow with no metadata!
 					update_master_score ${score_shadow_no_metadata}
