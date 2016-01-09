@@ -534,6 +534,25 @@ lizardfs_probe() {
 #		 && [[ ! -z `pgrep -f "initial-personality=shadow start"` ]] ; then
 #			ocf_log error "##### mfsmetarestore -a ; crm resource cleanup lizardfs-ms"
 #			echo -e "master\tunclean"
+## After retrying the probe, presume that perhaps the master is momentarially busy...
+###metadataserver[8375]: NOTICE: read data from socket: timeout. Trying to probe again
+###metadataserver[8375]: NOTICE: unexpected output from lizardfs-admin: unknown#011unknown#011Error: Can't read data from socket: timeout
+###metadataserver[8840]: NOTICE: unexpected output from lizardfs-admin: unknown#011unknown#011Error: Can't connect to 127.0.0.1:9421: ETIMEDOUT (Operation timed out)
+###lrmd: [18628]: info: operation notify[147890] on lizardfs-master:0 for client 18631: pid 8840 exited with return code 0
+# First try and trap the ETIMEDOUT and probe again ( This should prevent eronious demotion when busy )
+		elif [[ "$probe_results" =~ "connect to 127.0.0.1:9421: ETIMEDOUT" ]]\
+		 && [[ ! -z `pgrep -f "ha-cluster-managed"` ]] && [[ -z $retry_probe ]] ; then
+			msg="connect to 127.0.0.1:9421: ETIMEDOUT. Trying to probe again"
+			ocf_log error "$msg" ; test $debug && ocf_log notice "$msg"
+			retry_probe=1 ; sleep 3 ; lizardfs_probe
+# also try to trap timeout as master ( This might prevent actual fault detection )
+		elif [[ "$probe_results" =~ "read data from socket: timeout" ]]\
+		 && [[ ! -z `pgrep -f "initial-personality=master start"` ]] ; then
+			echo -e "master\tbusy"
+# also try to trap ETIMEDOUT as master ( This might prevent actual fault detection )
+		elif [[ "$probe_results" =~ "connect to 127.0.0.1:9421: ETIMEDOUT" ]]\
+		 && [[ ! -z `pgrep -f "initial-personality=master start"` ]] ; then
+			echo -e "master\tbusy"
 ## Attempting to catch the quick stopped master which can only become a shadow or would require mfsmetarestore -a
 ## That does not work so instead we use the "promotion to master was prevented by monitor" method
 		else
@@ -604,6 +623,13 @@ lizardfs_master_monitor() {
 				update_master_score ${score_shadow_no_metadata}
 				return $OCF_RUNNING_MASTER
 #				return $OCF_SUCCESS
+			;;
+			master/busy)
+				msg="running in master mode, but busy"
+				ocf_log debug "$msg" ; test $debug && ocf_log notice "$msg"
+#				update_master_score ${score_master}
+#				set_metadata_version "${metadata_version}"
+				return $OCF_RUNNING_MASTER
 			;;
 #			master/starting)
 #				msg="running in master mode starting up."
