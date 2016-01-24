@@ -616,7 +616,10 @@ lizardfs_master_monitor() {
 				msg="running in master mode"
 				ocf_log debug "$msg" ; test $debug && ocf_log notice "$msg"
 				update_master_score ${score_master}
-				set_metadata_version "${metadata_version}"
+# type_op will be set to something if we are doing any sort of transition,  In a constantly
+# active cluster setting the metadata version here due to a transition will cause a transition
+# abort or delay and we will end up in an ugly loop where by no action will be attempted.
+				[[ -z ${type_op} ]] && set_metadata_version "${metadata_version}"
 				return $OCF_RUNNING_MASTER
 			;;
 			master/stopping)
@@ -629,8 +632,8 @@ lizardfs_master_monitor() {
 			master/busy)
 				msg="running in master mode, but busy"
 				ocf_log debug "$msg" ; test $debug && ocf_log notice "$msg"
-#				update_master_score ${score_master}
-#				set_metadata_version "${metadata_version}"
+#Not if Busy#			update_master_score ${score_master}
+#Not if Busy#			set_metadata_version "${metadata_version}"
 				return $OCF_RUNNING_MASTER
 			;;
 #			master/starting)
