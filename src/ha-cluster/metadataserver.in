@@ -519,6 +519,12 @@ lizardfs_probe() {
 			msg="read data from socket: timeout. Trying to probe again"
 			ocf_log error "$msg" ; test $debug && ocf_log notice "$msg"
 			retry_probe=1 ; sleep 3 ; lizardfs_probe
+## Might also get Can't read data from socket: Connection reset by peer
+		elif [[ "$probe_results" =~ "read data from socket: Connection reset by peer" ]]\
+		 && [[ ! -z `pgrep -f "ha-cluster-managed"` ]] && [[ -z $retry_probe ]] ; then
+			msg="read data from socket: Connection reset by peer. Trying to probe again"
+			ocf_log error "$msg" ; test $debug && ocf_log notice "$msg"
+			retry_probe=1 ; sleep 3 ; lizardfs_probe
 ## probes times out in ~5~7 sec * 3 = 15~21 sec + sleep, corosync default timeout is 20 seconds.
 ## Trying a third probe attempt might exceed the monitor operation timeout, which could be increased...
 #		elif [[ "$probe_results" =~ "read data from socket: timeout" ]]\
@@ -528,6 +534,10 @@ lizardfs_probe() {
 #			retry_probe_again=1 ; lizardfs_probe
 ## After retrying the probe, presume that perhaps the shadow is syncing...
 		elif [[ "$probe_results" =~ "read data from socket: timeout" ]]\
+		 && [[ ! -z `pgrep -f "initial-personality=shadow start"` ]] ; then
+			echo -e "shadow\tsyncing"
+## Might also get Can't read data from socket: Connection reset by peer
+		elif [[ "$probe_results" =~ "read data from socket: Connection reset by peer" ]]\
 		 && [[ ! -z `pgrep -f "initial-personality=shadow start"` ]] ; then
 			echo -e "shadow\tsyncing"
 #		elif [[ "$probe_results" =~ "connection failed, error: ECONNREFUSED (Connection refused)" ]]\
