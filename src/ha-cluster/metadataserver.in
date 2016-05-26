@@ -484,9 +484,16 @@ lizardfs_probe() {
 		host=$matocl_host
 	fi
 # Error: Can't connect to 127.0.0.1:9421: ENOTCONN (Transport endpoint is not connected)
-## While stopping shadow master, stopping initial master, or starting initial master.
+##	While stopping shadow master, stopping initial master, or starting initial master.
+# Error: Can't connect to 127.0.0.1:9421: ETIMEDOUT (Operation timed out)
+##	While the master service is busy doing snapshots or other things ??
 # Error: Can't read data from socket: timeout
-## While starting shadow master and reintegrating new metadata received from master.
+##	While starting shadow master and reintegrating new metadata received from master.
+# Error: Can't read data from socket: Connection reset by peer
+##	This might also occur when the master service is busy ??
+# Error: connection failed, error: ECONNREFUSED (Connection refused)
+##	Rare, maybe "master\unclean" in need of ocf_log error "##### mfsmetarestore -a ; crm resource cleanup lizardfs-ms"
+
 # Send errors to stdin so we can determine status of service which is not responding to network probes:
 	probe_results=$(lizardfs-admin metadataserver-status --porcelain "${host}" "$matocl_port" 2>&1)
         ret=$?
@@ -505,6 +512,7 @@ lizardfs_probe() {
 ## Can not determine the difference between stopping and starting initial master service, which
 ## is not a problem that we can not tell them apart, both are valid states which we wait on.
 #			echo -e "master\tstarting"
+
 ## When the master dumps metadata to disk at the top of each hour it may stop responding for a moment.
 ## This has been observed with metadata.mfs > 8GB , but not with metadata.mfs < 1.6G.
 ## Test this with `echo -n "${admin_password}" | lizardfs-admin save-metadata "${host}" ${matocl_port}`
@@ -525,26 +533,6 @@ lizardfs_probe() {
 			msg="read data from socket: Connection reset by peer. Trying to probe again"
 			ocf_log error "$msg" ; test $debug && ocf_log notice "$msg"
 			retry_probe=1 ; sleep 3 ; lizardfs_probe
-## probes times out in ~5~7 sec * 3 = 15~21 sec + sleep, corosync default timeout is 20 seconds.
-## Trying a third probe attempt might exceed the monitor operation timeout, which could be increased...
-#		elif [[ "$probe_results" =~ "read data from socket: timeout" ]]\
-#		 && [[ ! -z `pgrep -f "ha-cluster-managed"` ]] && [[ -z $retry_probe_again ]] ; then
-#			msg="read data from socket: timeout. Trying to probe one last time"
-#			ocf_log error "$msg" ; test $debug && ocf_log notice "$msg"
-#			retry_probe_again=1 ; lizardfs_probe
-## After retrying the probe, presume that perhaps the shadow is syncing...
-		elif [[ "$probe_results" =~ "read data from socket: timeout" ]]\
-		 && [[ ! -z `pgrep -f "initial-personality=shadow start"` ]] ; then
-			echo -e "shadow\tsyncing"
-## Might also get Can't read data from socket: Connection reset by peer
-		elif [[ "$probe_results" =~ "read data from socket: Connection reset by peer" ]]\
-		 && [[ ! -z `pgrep -f "initial-personality=shadow start"` ]] ; then
-			echo -e "shadow\tsyncing"
-#		elif [[ "$probe_results" =~ "connection failed, error: ECONNREFUSED (Connection refused)" ]]\
-#		 && [[ ! -z `pgrep -f "initial-personality=shadow start"` ]] ; then
-#			ocf_log error "##### mfsmetarestore -a ; crm resource cleanup lizardfs-ms"
-#			echo -e "master\tunclean"
-## After retrying the probe, presume that perhaps the master is momentarially busy...
 ###metadataserver[8375]: NOTICE: read data from socket: timeout. Trying to probe again
 ###metadataserver[8375]: NOTICE: unexpected output from lizardfs-admin: unknown#011unknown#011Error: Can't read data from socket: timeout
 ###metadataserver[8840]: NOTICE: unexpected output from lizardfs-admin: unknown#011unknown#011Error: Can't connect to 127.0.0.1:9421: ETIMEDOUT (Operation timed out)
@@ -555,14 +543,37 @@ lizardfs_probe() {
 			msg="connect to 127.0.0.1:9421: ETIMEDOUT. Trying to probe again"
 			ocf_log error "$msg" ; test $debug && ocf_log notice "$msg"
 			retry_probe=1 ; sleep 3 ; lizardfs_probe
-# also try to trap timeout as master ( This might prevent actual fault detection )
-		elif [[ "$probe_results" =~ "read data from socket: timeout" ]]\
-		 && [[ ! -z `pgrep -f "initial-personality=master start"` ]] ; then
-			echo -e "master\tbusy"
-# also try to trap ETIMEDOUT as master ( This might prevent actual fault detection )
-		elif [[ "$probe_results" =~ "connect to 127.0.0.1:9421: ETIMEDOUT" ]]\
-		 && [[ ! -z `pgrep -f "initial-personality=master start"` ]] ; then
-			echo -e "master\tbusy"
+
+## probes times out in ~5~7 sec * 3 = 15~21 sec + sleep, corosync default timeout is 20 seconds.
+## Trying a third probe attempt might exceed the monitor operation timeout, which could be increased...
+#		elif [[ "$probe_results" =~ "read data from socket: timeout" ]]\
+#		 && [[ ! -z `pgrep -f "ha-cluster-managed"` ]] && [[ -z $retry_probe_again ]] ; then
+#			msg="read data from socket: timeout. Trying to probe one last time"
+#			ocf_log error "$msg" ; test $debug && ocf_log notice "$msg"
+#			retry_probe_again=1 ; lizardfs_probe
+
+## After retrying the probe, presume that timeout perhaps indicates the master is momentarially busy...
+## This might prevent actual fault detection ??
+## This does not help us if the currently acting master was started as a shadow, so we try with the next test
+#		elif ([[ "$probe_results" =~ "read data from socket: timeout" ]] || [[ "$probe_results" =~ "connect to 127.0.0.1:9421: ETIMEDOUT" ]])\
+#		 && [[ ! -z `pgrep -f "initial-personality=master start"` ]] ; then
+#			echo -e "master\tbusy"
+
+## After retrying the probe, presume that perhaps the shadow is syncing, or the master might be busy...
+## Would love to be able to more precicely determin the difference between these states.
+		elif ([[ "$probe_results" =~ "read data from socket:" ]] || [[ "$probe_results" =~ "connect to 127.0.0.1:9421: E" ]])\
+		 && [[ ! -z `pgrep -f "ha-cluster-managed"` ]] ; then
+			Cluster_Master=$(echo $(crm_mon -1 | grep Masters | cut -f2 -d[ | cut -f1 -d]))
+			MyHostname=$(hostname -s)
+			if [[ "${Cluster_Master}" == "${MyHostname}" ]] ; then
+## This might prevent actual fault detection ??
+# read data from socket: timeout || connect to 127.0.0.1:9421: ETIMEDOUT
+				echo -e "master\tbusy" # The cluster thinks I am the master so believe it if the actual service is to busy to be polled.
+			else 
+# read data from socket: timeout || read data from socket: Connection reset by peer
+				echo -e "shadow\tsyncing" # After retrying the probe, presume that perhaps the shadow is syncing...
+			fi
+
 ## Attempting to catch the quick stopped master which can only become a shadow or would require mfsmetarestore -a
 ## That does not work so instead we use the "promotion to master was prevented by monitor" method
 		else
@@ -628,7 +639,7 @@ lizardfs_master_monitor() {
 				update_master_score ${score_master}
 # type_op will be set to something if we are doing any sort of transition,  In a constantly
 # active cluster setting the metadata version here due to a transition will cause a transition
-# abort or delay and we will end up in an ugly loop where by no action will be attempted.
+# abort or delay and we will end up in an ugly loop where by no actions can actually be attempted.
 				[[ -z ${type_op} ]] && set_metadata_version "${metadata_version}"
 				return $OCF_RUNNING_MASTER
 			;;
@@ -639,13 +650,7 @@ lizardfs_master_monitor() {
 				return $OCF_RUNNING_MASTER
 #				return $OCF_SUCCESS
 			;;
-			master/busy)
-				msg="running in master mode, but busy"
-				ocf_log debug "$msg" ; test $debug && ocf_log notice "$msg"
-#Not if Busy#			update_master_score ${score_master}
-#Not if Busy#			set_metadata_version "${metadata_version}"
-				return $OCF_RUNNING_MASTER
-			;;
+# Do not yet know how to determin this state, which is fine, the above works all the same.
 #			master/starting)
 #				msg="running in master mode starting up."
 #				ocf_log debug "$msg" ; test $debug && ocf_log notice "$msg"
@@ -653,6 +658,13 @@ lizardfs_master_monitor() {
 #				return $OCF_RUNNING_MASTER
 #				return $OCF_SUCCESS
 #			;;
+			master/busy)
+				msg="running in master mode, but might be busy. This Might Fail to Detect Faults."
+				ocf_log debug "$msg" ; test $debug && ocf_log notice "$msg"
+#Not if Busy#			update_master_score ${score_master}
+#Not if Busy#			set_metadata_version "${metadata_version}"
+				return $OCF_RUNNING_MASTER
+			;;
 			shadow/stopping)
 				msg="running in shadow mode and stopping."
 				ocf_log debug "$msg" ; test $debug && ocf_log notice "$msg"
@@ -692,21 +704,25 @@ lizardfs_master_monitor() {
 						promote_mode="restart"
 					fi
 				elif [[ ${local_metadata_version} -gt 0 && ${in_memory} ]] ; then
-					msg="running in shadow mode, latest metadata is not available: ${local_metadata_version} < ${cluster_metadata_version}"
+					metadata_behind=$( expr ${cluster_metadata_version} - ${local_metadata_version} )
+					msg="running in shadow mode, latest metadata is not available: ${local_metadata_version} < ${cluster_metadata_version} (${metadata_behind})"
 					ocf_log debug "$msg" ; test $debug && ocf_log notice "$msg"
 					update_master_score ${score_shadow_connected}
 					promote_mode="reload"
 				else
+					rssize=$( ps h -o rss -p `pgrep mfsmaster` 2>/dev/null )
+					currents_size=$( stat ${master_metadata} -c %s 2>/dev/null )
 					acquired_size=$( stat ${master_metadata}.tmp -c %s 2>/dev/null )
 					previous_size=$( stat ${master_metadata}.1   -c %s 2>/dev/null )
-					msg="running in shadow mode, no metadata ${local_metadata_version} < ${cluster_metadata_version}. Acquiring ${acquired_size}/${previous_size} metadata."
+					msg="running in shadow mode, no metadata ${local_metadata_version} < ${cluster_metadata_version}. RSS ${rssize}. Acquiring ${currents_size}/${acquired_size}/${previous_size} metadata."
 					ocf_log debug "$msg" ; test $debug && ocf_log notice "$msg"
 					# Do not promote shadow with no metadata!
 					update_master_score ${score_shadow_no_metadata}
 #					promote_mode="prevent" # This is already our value...
 # corosync still attempts to promote a shadow with no metadata
 # would be best if it did not even attempt a promotion, but it does.
-# So when the promotion fails we must return $OCF_ERR_PERM # exit and block node from cluster until manual intervention otherwise let it keep trying...
+# So when the promotion fails we must return $OCF_ERR_PERM # exit and block node
+# from cluster until manual intervention otherwise let it keep trying...
                                 
 				fi
 				return $OCF_SUCCESS
