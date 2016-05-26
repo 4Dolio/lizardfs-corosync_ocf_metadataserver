@@ -93,8 +93,12 @@ promote_mode="prevent"
 # sed -i 's%debug: off%debug: on%' /etc/corosync/corosync.conf # To enable normal & noisy debugging.
 # Normally the /tmp folder is ethereal while /var/tmp/ is persistent, using /tmp folder by default.
 # touch /tmp/lfs-debug to enable some useful debugging log messages and touching at state changes.
+# DEBUG_STATE_CHANGE = /var/tmp # in master.cfg and then touch /var/tmp/lfs-debug to survive reboots:
 debug_state_change_logs=$(read_cfg_var ${OCF_RESKEY_master_cfg} DEBUG_STATE_CHANGE = /tmp)
 debug="" ; if [[ -f $debug_state_change_logs/lfs-debug ]] ; then debug=1; fi
+# SHADOW_METADATA_RETENTION = minutes # delete shadows metadata.mfs.DateStamp files after this many minutes
+# 4320=3days, 5760=4, 7200=5, 8640=6, 10080=7 (default), 11520=8 days
+shadow_metadata_retention=$(read_cfg_var ${OCF_RESKEY_master_cfg} SHADOW_METADATA_RETENTION = 10080)
 
 # About
 
@@ -259,10 +263,13 @@ metadataserver_really_stop() {
 			if [[ ${local_metadata_version} -gt 0 ]] ; then
 				msg="Was running in shadow mode with version ${local_metadata_version} so moving the metadata.mfs out of view."
 				ocf_log warn "$msg" ; test $debug && ocf_log notice "$msg" 
+# This is a rather poor way to rotate metadata files. We want to force the rotation of the metadata.mfs when
+# a shadow is stopped so the shadow can not automatically seed the cluster without manual intervention.
 				test -e "${master_metadata}.3" && mv "${master_metadata}.3" "${master_metadata}.`date +\%Y\%m\%d.\%H\%M\%S`"
 				test -e "${master_metadata}.2" && mv "${master_metadata}.2" "${master_metadata}.3"
 				test -e "${master_metadata}.1" && mv "${master_metadata}.1" "${master_metadata}.2"
 				test -e "${master_metadata}"   && mv "${master_metadata}" "${master_metadata}.1"
+				find ${master_metadata}.* -mmin +${shadow_metadata_retention} -ls -delete # If noone notices within 7 days, delete them.
 			else
 				msg="Was running in shadow mode but had no metadata."
 				ocf_log warn "$msg" ; test $debug && ocf_log notice "$msg" 
