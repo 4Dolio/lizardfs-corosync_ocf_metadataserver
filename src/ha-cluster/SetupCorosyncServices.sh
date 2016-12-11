@@ -23,6 +23,7 @@ sed -i 's/^# Default-Stop:.*/# Default-Stop: \t0 1 6/' /etc/init.d/pacemaker # a
 sed -i 's%echo -n "Starting $desc: "$%echo -n "Starting $desc: " ; sleep 2 # might fail to start if corosync also started recently%' /etc/init.d/pacemaker
 update-rc.d pacemaker defaults ; update-rc.d corosync defaults # Fix up the default for corosync and pacemaker 
 sed -i 's/mcastaddr: .*/mcastaddr: '$mcastaddr'/' /etc/corosync/corosync.conf # VERIFY THIS IS CORRECT FOR THE INTENDED CLUSTER 
+sed -i 's/^.*mcastaddr: .*/\t\tmcastaddr: '$mcastaddr'/' /etc/corosync/corosync.conf # Deb 8.5-ish has this commented out by default
 sed -i 's/bindnetaddr: 127.0.0.1/bindnetaddr: '$bindnetaddr'/' /etc/corosync/corosync.conf # this should match the network on which the floating IP will live. 
 sed -i 's/bindnetaddr: .*/bindnetaddr: '$bindnetaddr.0/ /etc/corosync/corosync.conf # this should match the network on which the floating IP will live.
 sed -i 's/START=no/START=yes/' /etc/default/corosync 
