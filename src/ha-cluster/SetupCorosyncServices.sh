@@ -30,5 +30,6 @@ sed -i 's/START=no/START=yes/' /etc/default/corosync
 grep "ver:\|Required\|Default\|addr:\|START" /etc/init.d/pacemaker /etc/default/corosync /etc/corosync/corosync.conf
 
 echo " You should run corosync-keygen on your first node to generate an /etc/corosync/authkey which should be coppied to all other nodes."
+echo " This process you just completed with this script must also be completed on all other member nodes."
 
 ##
