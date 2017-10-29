@@ -4,16 +4,16 @@
 
 if [ `dpkg -l | grep -c corosync` -lt 1 ]  ; then echo " corosync does not appear to be installed"  ; fi
 if [ `dpkg -l | grep -c pacemaker` -lt 1 ] ; then echo " pacemaker does not appear to be installed" ; fi
-if [ ! $mcastaddr ] ; then
+if [ ! $mcastaddr ] ; then # for corosync use
  echo " You must set mcastaddr to the appropriate IP, such as 226.94.1.FloatIPLastOctet"
  echo " export mcastaddr=226.94.1.?? # Pausing so you can break ^C and correct this problem" ; read foo
 else echo " mcastaddr is set to $mcastaddr" ; fi
 
-if [ ! $FailoverIP ] ; then
+if [ ! $FailoverIP ] ; then # for lizardfs cluster master address
  echo " You must set FailoverIP to the appropriate IP, such as 10.10.10.FloatIPLastOctet"
  echo " export FailoverIP=10.10..?? # Pausing so you can break ^C and correct this problem" ; read foo
 else echo " FailoverIP is set to $FailoverIP" ; fi
-bindnetaddr=$( echo $FailoverIP | cut -f1-3 -d\. )
+bindnetaddr=$( echo $FailoverIP | cut -f1-3 -d\. ) # Assumes a Class C block
 echo " bindnetaddr is set to $bindnetaddr.0"
 
 sed -i 's/^.*ver:.*/ \tver: 1/' /etc/corosync/corosync.conf # This makes pacemaker behave as an independent service 
