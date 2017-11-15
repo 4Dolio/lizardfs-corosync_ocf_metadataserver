@@ -15,4 +15,6 @@ live mfs-master instance and a shadow master. [1]: http://clusterlabs.org/doc/
 
 
 https://github.com/lizardfs/lizardfs/issues/621#issuecomment-344578582
-Yes. My useful information is that the lizardfs-admin tool is the human, scriptable, programmable interface to communicate with the master.  It works perfectly. There is nothing wrong with it. That IS is answer.
+Yes. My useful information is that the lizardfs-admin tool is the human,
+scriptable, programmable interface to communicate with the master.
+It works perfectly. There is nothing wrong with it. That IS is answer.
