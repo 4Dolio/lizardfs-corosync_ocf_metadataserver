@@ -11,10 +11,3 @@ https://github.com/lizardfs/lizardfs/issues/598#issuecomment-334202503
 
 This directory contains an OCF resource agent,for managing failover between a
 live mfs-master instance and a shadow master. [1]: http://clusterlabs.org/doc/
-
-
-
-https://github.com/lizardfs/lizardfs/issues/621#issuecomment-344578582
-I am not trolling. My useful information is that the lizardfs-admin tool is
-the human, scriptable, programmable interface to communicate with the master.
-It works perfectly. There is nothing wrong with it. That IS answer.
