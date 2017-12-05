@@ -60,7 +60,7 @@ read_cfg_var() {
 
 # Parameters for this resource agent, with default values
 
-OCF_RESKEY_master_cfg_default=@ETC_PATH@/mfs/mfsmaster.cfg
+OCF_RESKEY_master_cfg_default=/etc/mfs/mfsmaster.cfg
 
 : ${OCF_RESKEY_master_cfg:=$OCF_RESKEY_master_cfg_default}
 
@@ -77,17 +77,28 @@ metadata_version_attribute_name="lizardfs-metadata-version"
 
 failover_ip=$(read_cfg_var ${OCF_RESKEY_master_cfg} MASTER_HOST)
 admin_password=$(read_cfg_var ${OCF_RESKEY_master_cfg} ADMIN_PASSWORD)
-data_dir=$(read_cfg_var ${OCF_RESKEY_master_cfg} DATA_PATH = @DATA_PATH@)
+data_dir=$(read_cfg_var ${OCF_RESKEY_master_cfg} DATA_PATH = /var/lib/mfs)
 matocl_host=$(read_cfg_var ${OCF_RESKEY_master_cfg} MATOCL_LISTEN_HOST = '*')
 matocl_port=$(read_cfg_var ${OCF_RESKEY_master_cfg} MATOCL_LISTEN_PORT = 9421)
-lizardfs_user=$(read_cfg_var ${OCF_RESKEY_master_cfg} WORKING_USER = @DEFAULT_USER@)
-lizardfs_group=$(read_cfg_var ${OCF_RESKEY_master_cfg} WORKING_GROUP = @DEFAULT_GROUP@)
-exports_cfg=$(read_cfg_var ${OCF_RESKEY_master_cfg} WORKING_GROUP = @ETC_PATH@/mfs/mfsexports.cfg)
+lizardfs_user=$(read_cfg_var ${OCF_RESKEY_master_cfg} WORKING_USER = mfs)
+lizardfs_group=$(read_cfg_var ${OCF_RESKEY_master_cfg} WORKING_GROUP = mfs)
+exports_cfg=$(read_cfg_var ${OCF_RESKEY_master_cfg} EXPORTS_FILENAME = /etc/mfs/mfsexports.cfg)
 
 master_metadata=${data_dir}/metadata.mfs
 master_lock=${data_dir}/metadata.mfs.lock
 master_backup_logs=${data_dir}/changelog.mfs.*
 promote_mode="prevent"
+
+# Debugging variables:  These may aid in attempting to debug what corosync and pacemaker are doing.
+# sed -i 's%debug: off%debug: on%' /etc/corosync/corosync.conf # To enable normal & noisy debugging.
+# Normally the /tmp folder is ethereal while /var/tmp/ is persistent, using /tmp folder by default.
+# touch /tmp/lfs-debug to enable some useful debugging log messages and touching at state changes.
+# DEBUG_STATE_CHANGE = /var/tmp # in master.cfg and then touch /var/tmp/lfs-debug to survive reboots:
+debug_state_change_logs=$(read_cfg_var ${OCF_RESKEY_master_cfg} DEBUG_STATE_CHANGE = /tmp)
+debug="" ; if [[ -f $debug_state_change_logs/lfs-debug ]] ; then debug=1; fi
+# SHADOW_METADATA_RETENTION = minutes # delete shadows metadata.mfs.DateStamp files after this many minutes
+# 4320=3days, 5760=4, 7200=5, 8640=6, 10080=7 (default), 11520=8 days
+shadow_metadata_retention=$(read_cfg_var ${OCF_RESKEY_master_cfg} SHADOW_METADATA_RETENTION = 10080)
 
 # About
 
@@ -139,24 +150,63 @@ Config file for LizardFS metadata server; will find in config_dir if not specifi
       <content type="string" default="$OCF_RESKEY_master_cfg_default"/>
     </parameter>
   </parameters>
-  <actions>
-    <action name="start"        timeout="45" />
-    <action name="stop"         timeout="45" />
-    <action name="monitor"      timeout="20"
-                                depth="0" interval="20" role="Slave" />
-    <action name="monitor"      timeout="20"
-                                depth="0" interval="10" role="Master" />
+  <actions> 
+    <action name="start"        timeout="1800" />
+    <action name="stop"         timeout="1800" />
+    <action name="monitor"      interval="2" role="Slave"  timeout="40" />
+    <action name="monitor"      interval="1" role="Master" timeout="30" />
     <action name="reload"       timeout="20" />
-    <action name="promote"      timeout="45" />
-    <action name="demote"       timeout="45" />
+    <action name="promote"      timeout="1800" />
+    <action name="demote"       timeout="1800" />
     <!--action name="notify"       timeout="20" /-->
-    <action name="meta-data"    timeout="5" />
-    <action name="validate-all" timeout="5" />
+    <!--<action name="meta-data"    timeout="5" />-->
+    <!--<action name="validate-all" timeout="5" />-->
   </actions>
 </resource-agent>
 EOF
 }
 
+intervention_required() {
+# return $OCF_ERR_PERM # exit and block node from cluster until manual intervention otherwise it keeps trying to get promoted...
+# Demotions of master nodes attempt to use quick-stop which succeeds if there are shadows online.
+# Stops of shaows nodes with valid metadata are followed by the rotation of their metadata files.
+# If a quick stopped master or shadow with rotated metadata attempts to be promoted (which it will)...
+# it is perm(issions/inently) failed from the cluster until someone intervenes.
+ocf_log error "#####"
+ocf_log error "##### This state indicates that either the master process has crashed, or "
+ocf_log error "##### a stopped shadow or demoted master is attempting to seed the cluster."
+case $1 in
+	"promotion to master was prevented by monitor") ocf_log error "#####           $1" ;;
+	"LizardFS metadata server has failed"         ) ocf_log error "#####           $1" ;;
+	*                                             ) ocf_log error "#####           $1" ;;
+esac
+ocf_log error "#####"
+ocf_log error "##### The Corosync LizardFS Cluster may require manual intervention.  At the very"
+ocf_log error "##### least this node will need a little help before it begine to participate"
+ocf_log error "##### again.  Only the last master node in the cluster is allowed to be the first"
+ocf_log error "##### master when the cluster is started again.  Perhaps this error occured"
+ocf_log error "##### because this shadow node came online before the previous master node.  In"
+ocf_log error "##### that case the best course of action is simply to: 1:Wait for the previous"
+ocf_log error "##### master node to come back online.  2:Reboot this node, restart"
+ocf_log error "##### pacemaker/corosync, or do a resource cleanup..."
+ocf_log error "#####"
+ocf_log error "##### 3:If you know the previous master node is unavailable and need to choose"
+ocf_log error "##### from the shadows.  4:You can examine the state of the metadata on each"
+ocf_log error "##### shadow members disk with:"
+ocf_log error "#####  : mfsmetadump ${master_metadata}.1 | head -n 2 | cut -f5-6 -d\  # at each node."
+ocf_log error "##### 5:On the node with the largest value for the metadata version you can run:"
+ocf_log error "#####  : mfsmetarestore -a # to restore usable metadata with which to start."
+ocf_log error "##### 6:Once you are ready to try again with a shadow node run this to try again:"
+ocf_log error "#####  : crm resource cleanup lizardfs-ms # clear all cluster errors and try again."
+ocf_log error "#####"
+ocf_log error "##### If this node crashed try: rm ${master_lock} && crm resource cleanup lizardfs-ms"
+ocf_log error "#####"
+ocf_log error "##### As an absolute last resort if the cluster metadata version is newer than anything you have,"
+ocf_log error "##### Reset what the cluster believes the metadata version is so you can use with what you have."
+ocf_log error "##### ${HA_SBIN_DIR}/crm_attribute --lifetime=forever --type=crm_config --name=${metadata_version_attribute_name} --update=0"
+ocf_log error "##### An alternate option would be to start a master before corosync, that master should reset the clusters version."
+ocf_log error "#####"
+}
 
 # Utilities
 
@@ -164,6 +214,7 @@ lizardfs_master() {
 	local command=$1
 	local personality=$2
 	mfsmaster -c "$OCF_RESKEY_master_cfg" -o ha-cluster-managed -o initial-personality="${personality}" "${command}"
+#	test $debug && touch $debug_state_change_logs/lfs-`date +\%Y\%m\%d.\%H\%M\%S`-M_${personality}_${command}
 }
 
 # Actions
@@ -172,14 +223,17 @@ lizardfs_master_start_shadow() {
 	lizardfs_master_monitor
 	case $? in
 		$OCF_RUNNING_MASTER)
-			ocf_log warn "LizardFS metadata server already running in master mode"
+			msg="LizardFS metadata server already running in master mode"
+			ocf_log warn "$msg" ; test $debug && ocf_log notice "$msg"
 			return $OCF_RUNNING_MASTER
 		;;
 		$OCF_SUCCESS)
-			ocf_log info "LizardFS metadata server already running as a shadow master"
+			msg="LizardFS metadata server already running as a shadow master"
+			ocf_log info "$msg" ; test $debug && ocf_log notice "$msg"
 			return $OCF_SUCCESS
 		;;
-		*)  ocf_log debug "starting LizardFS metadata server as shadow master"
+		*)	msg="starting LizardFS metadata server as shadow master"
+			ocf_log debug "$msg" ; test $debug && ocf_log notice "$msg"
 	esac
 
 	if ! ensure_dirs ; then
@@ -189,14 +243,50 @@ lizardfs_master_start_shadow() {
 	# When the start action is called, we are supposed to start in the
 	# slave state, which means starting a shadow master.
 
+	msg="starting LizardFS metadata server as shadow master"
+	ocf_log info "$msg" ; test $debug && ocf_log notice "$msg"
+	test $debug && touch $debug_state_change_logs/lfs-`date +\%Y\%m\%d.\%H\%M\%S`-StartS
 	ocf_run lizardfs_master start shadow
 }
 
 metadataserver_really_stop() {
 	if ocf_run lizardfs_master stop ; then
-		return $OCF_SUCCESS
+# if we stopped cleanly and were a shadow then move metadata to metadata.mfs.1 so that
+# shadow nodes can not be started again as a cluster master node without intervention.
+		case "$personality" in
+                        master)
+			msg="Was running in master mode so leaving the metadata.mfs as is."
+			ocf_log warn "$msg" ; test $debug && ocf_log notice "$msg" 
+			return $OCF_SUCCESS
+		;;
+                        shadow)
+			if [[ ${local_metadata_version} -gt 0 ]] ; then
+				msg="Was running in shadow mode with version ${local_metadata_version} so moving the metadata.mfs out of view."
+				ocf_log warn "$msg" ; test $debug && ocf_log notice "$msg" 
+# This is a rather poor way to rotate metadata files. We want to force the rotation of the metadata.mfs when
+# a shadow is stopped so the shadow can not automatically seed the cluster without manual intervention.
+				test -e "${master_metadata}.3" && mv "${master_metadata}.3" "${master_metadata}.`date +\%Y\%m\%d.\%H\%M\%S`"
+				test -e "${master_metadata}.2" && mv "${master_metadata}.2" "${master_metadata}.3"
+				test -e "${master_metadata}.1" && mv "${master_metadata}.1" "${master_metadata}.2"
+				test -e "${master_metadata}"   && mv "${master_metadata}" "${master_metadata}.1"
+				find ${master_metadata}.* -mmin +${shadow_metadata_retention} -ls -delete # If noone notices within 7 days, delete them.
+			else
+				msg="Was running in shadow mode but had no metadata."
+				ocf_log warn "$msg" ; test $debug && ocf_log notice "$msg" 
+			fi
+                        test -e "${master_lock}" && unlink "${master_lock}"
+			return $OCF_SUCCESS
+		;;
+			*)
+			msg="Could not determine which mode we were running in."
+			ocf_log warn "$msg" ; test $debug && ocf_log notice "$msg" 
+			return $OCF_SUCCESS
+		;;
+		esac
 	else
-		ocf_log warn "failed to stop LizardFS metadata server, killing instead"
+		msg="failed to stop LizardFS metadata server, killing instead"
+		ocf_log warn "$msg" ; test $debug && ocf_log notice "$msg" 
+	test $debug && touch $debug_state_change_logs/lfs-`date +\%Y\%m\%d.\%H\%M\%S`-Kill
 		if ocf_run lizardfs_master kill ; then
 			return $OCF_SUCCESS
 		else
@@ -210,18 +300,23 @@ lizardfs_master_stop() {
 	lizardfs_master_monitor
 	case $? in
 		$OCF_RUNNING_MASTER|$OCF_SUCCESS)
-			ocf_log debug "trying to gracefully shutdown LizardFS metadata server"
+			msg="trying to gracefully shutdown LizardFS metadata server"
+			ocf_log debug "$msg" ; test $debug && ocf_log notice "$msg"
+	test $debug && touch $debug_state_change_logs/lfs-`date +\%Y\%m\%d.\%H\%M\%S`-Stop
 			metadataserver_really_stop
 		;;
 		$OCF_NOT_RUNNING)
-			ocf_log info "tried to stop already stopped instance"
+			msg="tried to stop already stopped instance"
+			ocf_log info "$msg" ; test $debug && ocf_log notice "$msg"
 			return $OCF_SUCCESS
 		;;
 		$OCF_FAILED_MASTER)
-			ocf_log info "tried to stop failed master"
+			msg="tried to stop failed master"
+			ocf_log info "$msg" ; test $debug && ocf_log notice "$msg"
 			return $OCF_SUCCESS
 		;;
-		*)  ocf_log error "unknown state ${?}, trying to stop"
+		*)	msg="unknown state ${?}, trying to stop"
+			ocf_log error "$msg" ; test $debug && ocf_log notice "$msg"
 			metadataserver_really_stop
 		;;
 	esac
@@ -231,31 +326,46 @@ lizardfs_master_promote() {
 	lizardfs_master_monitor
 	case $? in
 		$OCF_RUNNING_MASTER)
-			ocf_log info "LizardFS metadata server already running as master"
+			msg="LizardFS metadata server already running as master"
+			ocf_log info "$msg" ; test $debug && ocf_log notice "$msg"
 			return $OCF_SUCCESS
 		;;
 		$OCF_SUCCESS)
-			ocf_log debug "LizardFS metadata server is shadow master, promoting to master"
+			msg="LizardFS metadata server is shadow master, promoting to master"
+			ocf_log debug "$msg" ; test $debug && ocf_log notice "$msg"
 
 			local cluster_metadata_version=$(get_metadata_version)
 			if [[ ( $? != 0 ) || ( ${cluster_metadata_version} == "" ) ]] ; then
-				ocf_log error "Failed to obtain metadata version from cluster."
+				msg="Failed to obtain metadata version from cluster."
+				ocf_log error "$msg" ; test $debug && ocf_log notice "$msg"
 				return $OCF_ERR_GENERIC
 			fi
 
 			if [[ "${promote_mode}" == "restart" ]] ; then
-				ocf_log debug "running in shadow mode on cluster with no master, doing full restart"
-				if ! ( ocf_run lizardfs_master stop master && unlink "${master_lock}" && ocf_run lizardfs_master start master ) ; then
-					ocf_log error "Failed to restart into master mode"
+				msg="running in shadow mode on cluster with no master, doing full restart"
+				ocf_log debug "$msg" ; test $debug && ocf_log notice "$msg"
+	test $debug && touch $debug_state_change_logs/lfs-`date +\%Y\%m\%d.\%H\%M\%S`-Master1
+				do_cleanup=1 # set variable to let us know to do a cleanup
+				if ! ( ocf_run lizardfs_master stop master && unlink "${master_lock}"\
+				 && ocf_run lizardfs_master start master ) ; then
+					msg="Failed to restart into master mode"
+					ocf_log error "$msg" ; test $debug && ocf_log notice "$msg"
 					return $OCF_FAILED_MASTER
 				fi
 			elif [[ "${promote_mode}" == "reload" ]] ; then
 				if ! ocf_run lizardfs_admin_promote ; then
-					ocf_log error "failed to reload master"
+					msg="failed to reload master"
+					ocf_log error "$msg" ; test $debug && ocf_log notice "$msg"
 					return $OCF_FAILED_MASTER
 				fi
 			else
 				ocf_log error "promotion to master was prevented by monitor"
+				intervention_required "promotion to master was prevented by monitor"
+				return $OCF_ERR_PERM # exit and block node from cluster until manual intervention otherwise let it keep trying...
+# If we do not exit and block node now it will just keep trying to promote a shadow with no metadata
+# Would be far better if corosync would not attempt to promote a shadow that has no metadata.
+# Ultimately it would just leave the shadow running and waiting for a master to appear.
+# Having issues the intervention_required message just once in case a reminder is needed
 				return $OCF_SUCCESS
 			fi
 
@@ -264,17 +374,30 @@ lizardfs_master_promote() {
 			ret=$?
 			case $ret in
 				$OCF_RUNNING_MASTER)
-					ocf_log info "LizardFS metadata server promoted successfully"
+					msg="LizardFS metadata server promoted successfully"
+					ocf_log info "$msg" ; test $debug && ocf_log notice "$msg"
+	test $debug && touch $debug_state_change_logs/lfs-`date +\%Y\%m\%d.\%H\%M\%S`-Promote
+					if [[ "${do_cleanup}" == "1" ]] ; then
+# Adding an automated self `crm resource cleanup lizardfs-ms` command once a master succeeds at coming online.
+						msg="In background sleep and run crm resource cleanup lizardfs-ms # in order to allow shadows to rejoin"
+						ocf_log info "$msg" ; test $debug && ocf_log notice "$msg"
+# There may be some sort of race condition happening.  After a cleanup we sometimes see this error:
+# "WARN: decode_transition_key: Bad UUID" related to one of the numbered lizardfs-master:0 resources.
+# With two cluster members, running the cleanup twice seems to always let the cluster end up clean.
+						( sleep 10;crm resource cleanup lizardfs-ms ) &
+						( sleep 20;crm resource cleanup lizardfs-ms ) &
+					fi
 					return $OCF_SUCCESS
 				;;
-				*)  ocf_log err "LizardFS metadata server failed to promote"
+				*)	msg="LizardFS metadata server failed to promote"
+					ocf_log err "$msg" ; test $debug && ocf_log notice "$msg"
 					return $OCF_FAILED_MASTER
 				;;
 			esac
 		;;
 		*)
-			ocf_log error \
-				"LizardFS metadata server not running as shadow master, can't be promoted"
+			msg="LizardFS metadata server not running as shadow master, can't be promoted"
+			ocf_log error "$msg" ; test $debug && ocf_log notice "$msg"
 			return $OCF_ERR_GENERIC
 		;;
 	esac
@@ -287,23 +410,26 @@ lizardfs_master_notify() {
 	ocf_log debug "Received $type_op notification"
 	lizardfs_master_monitor
 	if [ $? -eq $OCF_SUCCESS ] ; then
-		# We're a shadow master node
-		ocf_log debug "We're a shadow master node"
+		msg="We're a shadow master node" # We're a shadow master node
+		ocf_log debug "$msg" ; test $debug && ocf_log notice "$msg"
 		case $type_op in
 			pre-promote)
 				# Start replicating from the new master
 				local new_master=$OCF_RESKEY_CRM_meta_notify_promote_uname
-				ocf_log debug "Changing master to $new_master"
+				msg="Changing master to $new_master"
+				ocf_log debug "$msg" ; test $debug && ocf_log notice "$msg"
 				# TODO
 				# call:
 				# lizardfs-admin force-reconnet ${host} ${port}
 			;;
 			*)
-				ocf_log debug "Notify type_op: $type_op"
+				msg="Notify type_op: $type_op"
+				ocf_log debug "$msg" ; test $debug && ocf_log notice "$msg"
 			;;
 		esac
 	else
-		ocf_log debug "lizardfs_master_monitor returned $?"
+		msg="lizardfs_master_monitor returned $?"
+		ocf_log debug "$msg" ; test $debug && ocf_log notice "$msg"
 	fi
 
 	return $OCF_SUCCESS
@@ -313,21 +439,33 @@ lizardfs_master_demote() {
 	lizardfs_master_monitor
 	case $? in
 		$OCF_RUNNING_MASTER)
-			ocf_log debug "LizardFS metadata server running as master, demoting"
+			# Node may refuse to quickly stop if there are no shadows present
+			# Refusal to quick stop with no shadows is manditory, so this is ok.
+			msg="LizardFS metadata server running as master, demoting"
+			ocf_log debug "$msg" ; test $debug && ocf_log notice "$msg"
+	test $debug && touch $debug_state_change_logs/lfs-`date +\%Y\%m\%d.\%H\%M\%S`-Demote
+			ocf_run lizardfs_admin_quick_stop && unlink "${master_lock}"
+## TODO look into if the exit code from the quick stop is important, in which case the unlink exit code may be getting in the way
 		;;
 		$OCF_SUCCESS)
-			ocf_log info "LizardFS metadata server already a shadow master"
+			msg="LizardFS metadata server already a shadow master"
+			ocf_log info "$msg" ; test $debug && ocf_log notice "$msg"
 			return $OCF_SUCCESS
 		;;
 		*)
-			ocf_log error \
-				"LizardFS metadata server not running, not a valid target for demotion"
+			msg="LizardFS metadata server not running, not a valid target for demotion"
+			ocf_log error "$msg" ; test $debug && ocf_log notice "$msg"
 			return $OCF_ERR_GENERIC
 		;;
 	esac
 
-	if ! ocf_run lizardfs_master restart shadow ; then
-		ocf_log error "Failed to start shadow master, demotion failed"
+# Do not bother to start the shadow again, trying to do so just causes the demotion operation to fail.
+	return $OCF_SUCCESS # so return right now instead
+# Perhaps we could call the lizardfs_master_start_shadow function with more success
+# The following was originally a restart which does not make sense if we had just stopped.
+	if ! ocf_run lizardfs_master start shadow ; then
+		msg="Failed to start shadow master, demotion failed"
+		ocf_log error "$msg" ; test $debug && ocf_log notice "$msg"
 		return $OCF_ERR_GENERIC
 	fi
 
@@ -352,7 +490,112 @@ lizardfs_probe() {
 	else
 		host=$matocl_host
 	fi
-	lizardfs-admin metadataserver-status --porcelain "${host}" "$matocl_port"
+# Error: Can't connect to 127.0.0.1:9421: ENOTCONN (Transport endpoint is not connected)
+##	While stopping shadow master, stopping initial master, or starting initial master.
+# Error: Can't connect to 127.0.0.1:9421: ETIMEDOUT (Operation timed out)
+##	While the master service is busy doing snapshots or other things ??
+# Error: Can't read data from socket: timeout
+##	While starting shadow master and reintegrating new metadata received from master.
+# Error: Can't read data from socket: Connection reset by peer
+##	This might also occur when the master service is busy ??
+# Error: connection failed, error: ECONNREFUSED (Connection refused)
+##	Rare, maybe "master\unclean" in need of ocf_log error "##### mfsmetarestore -a ; crm resource cleanup lizardfs-ms"
+
+# Send errors to stdin so we can determine status of service which is not responding to network probes:
+	probe_results=$(lizardfs-admin metadataserver-status --porcelain "${host}" "$matocl_port" 2>&1)
+        ret=$?
+        if [ $ret -eq 0 ] ; then # exited clean so just return the results
+		echo "$probe_results"
+	else # existed with an error so trying to making some reasonable assumptions
+		if   [[ "$probe_results" =~ "ENOTCONN (Transport endpoint is not connected)" ]]\
+		 && [[ ! -z `pgrep -f "initial-personality=shadow start"` ]] ; then
+			echo -e "shadow\tstopping"
+# Can not rely on checking for recent file activity but considered it:
+#		elif [ ! -z `find ${data_dir}/ -mmin -1`    ] ; then # Watch for any 1 minute or newer files
+#		elif [ ! -z `find ${data_dir}/ -mmin -0.02` ] ; then # Watch for any ~1second or newer files
+		elif [[ "$probe_results" =~ "ENOTCONN (Transport endpoint is not connected)" ]]\
+		 && [[ ! -z `pgrep -f "initial-personality=master start"` ]] ; then
+			echo -e "master\tstopping"
+## Can not determine the difference between stopping and starting initial master service, which
+## is not a problem that we can not tell them apart, both are valid states which we wait on.
+#			echo -e "master\tstarting"
+
+## When the master dumps metadata to disk at the top of each hour it may stop responding for a moment.
+## This has been observed with metadata.mfs > 8GB , but not with metadata.mfs < 1.6G.
+## Test this with `echo -n "${admin_password}" | lizardfs-admin save-metadata "${host}" ${matocl_port}`
+## Attempting to count the processes for the forked dumping process does not seem to work:
+#		elif [[ "$probe_results" =~ "read data from socket: timeout" ]]\
+#		 && [[ `pgrep -cf "initial-personality"` -gt 1 ]] ; then
+#			echo -e "master\tdumping"
+## To prevent it from being demoted, attempt the probe one or two more times before giving up.
+## probes time-out in ~5~7 sec, so only probe twice with 3 second of sleep. monitor will timeout in 20.
+		elif [[ "$probe_results" =~ "read data from socket: timeout" ]]\
+		 && [[ ! -z `pgrep -f "ha-cluster-managed"` ]] && [[ -z $retry_probe ]] ; then
+			msg="read data from socket: timeout. Trying to probe again"
+			ocf_log error "$msg" ; test $debug && ocf_log notice "$msg"
+			retry_probe=1 ; sleep 3 ; lizardfs_probe
+## Might also get Can't read data from socket: Connection reset by peer
+		elif [[ "$probe_results" =~ "read data from socket: Connection reset by peer" ]]\
+		 && [[ ! -z `pgrep -f "ha-cluster-managed"` ]] && [[ -z $retry_probe ]] ; then
+			msg="read data from socket: Connection reset by peer. Trying to probe again"
+			ocf_log error "$msg" ; test $debug && ocf_log notice "$msg"
+			retry_probe=1 ; sleep 3 ; lizardfs_probe
+###metadataserver[8375]: NOTICE: read data from socket: timeout. Trying to probe again
+###metadataserver[8375]: NOTICE: unexpected output from lizardfs-admin: unknown#011unknown#011Error: Can't read data from socket: timeout
+###metadataserver[8840]: NOTICE: unexpected output from lizardfs-admin: unknown#011unknown#011Error: Can't connect to 127.0.0.1:9421: ETIMEDOUT (Operation timed out)
+###lrmd: [18628]: info: operation notify[147890] on lizardfs-master:0 for client 18631: pid 8840 exited with return code 0
+# First try and trap the ETIMEDOUT and probe again ( This should prevent eronious demotion when busy )
+		elif [[ "$probe_results" =~ "connect to 127.0.0.1:9421: ETIMEDOUT" ]]\
+		 && [[ ! -z `pgrep -f "ha-cluster-managed"` ]] && [[ -z $retry_probe ]] ; then
+			msg="connect to 127.0.0.1:9421: ETIMEDOUT. Trying to probe again"
+			ocf_log error "$msg" ; test $debug && ocf_log notice "$msg"
+			retry_probe=1 ; sleep 3 ; lizardfs_probe
+
+## probes times out in ~5~7 sec * 3 = 15~21 sec + sleep, corosync default timeout is 20 seconds.
+## Trying a third probe attempt might exceed the monitor operation timeout, which could be increased...
+#		elif [[ "$probe_results" =~ "read data from socket: timeout" ]]\
+#		 && [[ ! -z `pgrep -f "ha-cluster-managed"` ]] && [[ -z $retry_probe_again ]] ; then
+#			msg="read data from socket: timeout. Trying to probe one last time"
+#			ocf_log error "$msg" ; test $debug && ocf_log notice "$msg"
+#			retry_probe_again=1 ; lizardfs_probe
+
+## After retrying the probe, presume that timeout perhaps indicates the master is momentarially busy...
+## This might prevent actual fault detection ??
+## This does not help us if the currently acting master was started as a shadow, so we try with the next test
+#		elif ([[ "$probe_results" =~ "read data from socket: timeout" ]] || [[ "$probe_results" =~ "connect to 127.0.0.1:9421: ETIMEDOUT" ]])\
+#		 && [[ ! -z `pgrep -f "initial-personality=master start"` ]] ; then
+#			echo -e "master\tbusy"
+
+## After retrying the probe, presume that perhaps the shadow is syncing, or the master might be busy...
+## Would love to be able to more precicely determin the difference between these states.
+		elif ([[ "$probe_results" =~ "read data from socket:" ]] || [[ "$probe_results" =~ "connect to 127.0.0.1:9421: E" ]])\
+		 && [[ ! -z `pgrep -f "ha-cluster-managed"` ]] ; then
+			Cluster_Master=$(echo $(crm_mon -1 | grep Masters | cut -f2 -d[ | cut -f1 -d]))
+			MyHostname=$(hostname -s)
+			if [[ "${Cluster_Master}" == "${MyHostname}" ]] ; then
+## This might prevent actual fault detection ??
+# read data from socket: timeout || connect to 127.0.0.1:9421: ETIMEDOUT
+				echo -e "master\tbusy" # The cluster thinks I am the master so believe it if the actual service is to busy to be polled.
+			else 
+# read data from socket: timeout || read data from socket: Connection reset by peer
+				echo -e "shadow\tsyncing" # After retrying the probe, presume that perhaps the shadow is syncing...
+			fi
+
+## Attempting to catch the quick stopped master which can only become a shadow or would require mfsmetarestore -a
+## That does not work so instead we use the "promotion to master was prevented by monitor" method
+		else
+			echo -e "unknown\tunknown\t$probe_results"
+		fi
+	fi
+}
+
+lizardfs_admin_quick_stop() {
+	# Stop metadata server without saving metadata to file
+	msg="LizardFS metadata server quickly stopping."
+	ocf_log debug "$msg" ; test $debug && ocf_log notice "$msg"
+	test $debug && touch $debug_state_change_logs/lfs-`date +\%Y\%m\%d.\%H\%M\%S`-QStop
+	echo -n "${admin_password}" | \
+		lizardfs-admin stop-master-without-saving-metadata "${matocl_host}" "$matocl_port"
 }
 
 update_master_score() {
@@ -360,7 +603,10 @@ update_master_score() {
 }
 
 set_metadata_version() {
-	ocf_log debug "LizardFS: setting cluster metadata version: ${1}"
+	local cluster_metadata_version=$(get_metadata_version)
+        metadata_change=$( expr ${metadata_version} - ${cluster_metadata_version} )
+        msg="LizardFS: setting cluster metadata version: ${1} (${metadata_change})"
+	ocf_log debug "$msg" ; test $debug && ocf_log notice "$msg"
 	ocf_run ${HA_SBIN_DIR}/crm_attribute --lifetime=forever --type=crm_config --name=${metadata_version_attribute_name} --update="${1}"
 }
 
@@ -376,44 +622,88 @@ get_metadata_version_from_file() {
 
 # Check if the mfsmaster process is running on this machine, and if so
 # check if it is as a master or a shadow master.
-# Sets global variable "promote_mode".
+# Sets global variable "promote_mode" and "personality".
 lizardfs_master_monitor() {
 	ocf_run -info lizardfs_master isalive
 	ret=$?
 
 	if [ $ret -eq 0 ] ; then
-		# mfsmaster is running, check to see if we're a shadow master or full
-		# master
+		# mfsmaster is running, check to see if we're a shadow master or full master
 		probe_result=$(lizardfs_probe)
 		if [ $? -ne 0 ] ; then
-			ocf_log err "failed to query LizardFS master status"
+			msg="failed to query LizardFS master status"
+			ocf_log err "$msg" ; test $debug && ocf_log notice "$msg"
 			return $OCF_ERR_GENERIC
 		fi
-		local personality=$(echo "$probe_result" | cut -f1)
+		personality=$(echo "$probe_result" | cut -f1)
 		local connection=$(echo "$probe_result" | cut -f2)
 		local metadata_version=$(echo "$probe_result" | cut -f3)
 		promote_mode="prevent"
 		case "$personality/$connection" in
 			master/running)
-				ocf_log debug "running in master mode"
+				msg="running in master mode"
+				ocf_log debug "$msg" ; test $debug && ocf_log notice "$msg"
 				update_master_score ${score_master}
-				set_metadata_version "${metadata_version}"
+# type_op will be set to something if we are doing any sort of transition,  In a constantly
+# active cluster setting the metadata version here due to a transition will cause a transition
+# abort or delay and we will end up in an ugly loop where by no actions can actually be attempted.
+				[[ -z ${type_op} ]] && set_metadata_version "${metadata_version}"
 				return $OCF_RUNNING_MASTER
+			;;
+			master/stopping)
+				msg="running in master mode and stopping or starting."
+				ocf_log debug "$msg" ; test $debug && ocf_log notice "$msg"
+				update_master_score ${score_shadow_no_metadata}
+				return $OCF_RUNNING_MASTER
+#				return $OCF_SUCCESS
+			;;
+# Do not yet know how to determin this state, which is fine, the above works all the same.
+#			master/starting)
+#				msg="running in master mode starting up."
+#				ocf_log debug "$msg" ; test $debug && ocf_log notice "$msg"
+#				update_master_score ${score_shadow_no_metadata}
+#				return $OCF_RUNNING_MASTER
+#				return $OCF_SUCCESS
+#			;;
+			master/busy)
+				msg="running in master mode, but might be busy. This Might Fail to Detect Faults."
+				ocf_log debug "$msg" ; test $debug && ocf_log notice "$msg"
+#Not if Busy#			update_master_score ${score_master}
+#Not if Busy#			set_metadata_version "${metadata_version}"
+				return $OCF_RUNNING_MASTER
+			;;
+			shadow/stopping)
+				msg="running in shadow mode and stopping."
+				ocf_log debug "$msg" ; test $debug && ocf_log notice "$msg"
+				# Do not promote shadow if it is shutting down.
+				update_master_score ${score_shadow_no_metadata}
+				return $OCF_SUCCESS
+			;;
+			shadow/syncing)
+#				rssize=$( ps aux|grep "[m]fsmaster -c"|awk '{print $5}' )
+				rssize=$( ps h -o rss -p `pgrep mfsmaster` 2>/dev/null )
+				msg="running in shadow mode, syncing with master. Local RSS is ${rssize}"
+				ocf_log debug "$msg" ; test $debug && ocf_log notice "$msg"
+				# Do not promote shadow which is syncing up to the master during startup
+				update_master_score ${score_shadow_no_metadata}
+				return $OCF_SUCCESS
 			;;
 			shadow/connected|shadow/disconnected)
 				local cluster_metadata_version=$(get_metadata_version)
 				if [[ ( $? != 0 ) || ( ${cluster_metadata_version} == "" ) ]] ; then
-					ocf_log error "Failed to obtain metadata version from cluster."
+					msg="Failed to obtain metadata version from cluster."
+					ocf_log error "$msg" ; test $debug && ocf_log notice "$msg"
 					return $OCF_ERR_GENERIC
 				fi
 				if [[ ${metadata_version} -gt 0 ]] ; then
-					local local_metadata_version="${metadata_version}"
+					local_metadata_version="${metadata_version}"
 					local in_memory=1
 				else
 					local local_metadata_version=$(get_metadata_version_from_file)
 				fi
 				if [ ${local_metadata_version} -ge ${cluster_metadata_version} ] ; then
-					ocf_log debug "running in shadow mode, have latest metadata: ${local_metadata_version}"
+					msg="running in shadow mode, have latest metadata: ${local_metadata_version}, can be promoted."
+					ocf_log debug "$msg" ; test $debug && ocf_log notice "$msg"
 					update_master_score ${score_shadow_lastest}
 					if [[ $in_memory ]] ; then
 						promote_mode="reload"
@@ -421,32 +711,49 @@ lizardfs_master_monitor() {
 						promote_mode="restart"
 					fi
 				elif [[ ${local_metadata_version} -gt 0 && ${in_memory} ]] ; then
-					ocf_log debug "running in shadow mode, latest metadata is not available: ${local_metadata_version} < ${cluster_metadata_version}"
+					metadata_behind=$( expr ${cluster_metadata_version} - ${local_metadata_version} )
+					msg="running in shadow mode, latest metadata is not available: ${local_metadata_version} < ${cluster_metadata_version} (${metadata_behind})"
+					ocf_log debug "$msg" ; test $debug && ocf_log notice "$msg"
 					update_master_score ${score_shadow_connected}
 					promote_mode="reload"
 				else
-					ocf_log debug "running in shadow mode, no metadata"
+					rssize=$( ps h -o rss -p `pgrep mfsmaster` 2>/dev/null )
+					currents_size=$( stat ${master_metadata} -c %s 2>/dev/null )
+					acquired_size=$( stat ${master_metadata}.tmp -c %s 2>/dev/null )
+					previous_size=$( stat ${master_metadata}.1   -c %s 2>/dev/null )
+					msg="running in shadow mode, no metadata ${local_metadata_version} < ${cluster_metadata_version}. RSS ${rssize}. Acquiring ${currents_size}/${acquired_size}/${previous_size} metadata."
+					ocf_log debug "$msg" ; test $debug && ocf_log notice "$msg"
 					# Do not promote shadow with no metadata!
 					update_master_score ${score_shadow_no_metadata}
+#					promote_mode="prevent" # This is already our value...
+# corosync still attempts to promote a shadow with no metadata
+# would be best if it did not even attempt a promotion, but it does.
+# So when the promotion fails we must return $OCF_ERR_PERM # exit and block node
+# from cluster until manual intervention otherwise let it keep trying...
+                                
 				fi
 				return $OCF_SUCCESS
 			;;
 			*)
-				ocf_log err \
-			    "unexpected output from lizardfs-admin: $probe_result"
+				msg="unexpected output from lizardfs-admin: $probe_result"
+				ocf_log err "$msg" ; test $debug && ocf_log notice "$msg"
 				return $OCF_ERR_GENERIC
 			;;
 		esac
 	elif [ $ret -eq 1 ] ; then
 		if [ ! -e "$master_lock" ] ; then
-			ocf_log debug "LizardFS metadata server not running (clean)."
+			msg="LizardFS metadata server not running (clean)."
+			ocf_log debug "$msg" ; test $debug && ocf_log notice "$msg"
 			return $OCF_NOT_RUNNING
 		else
-	    ocf_log warn "LizardFS metadata server has failed"
+			msg="LizardFS metadata server has failed"
+			ocf_log warn "$msg" ; test $debug && ocf_log notice "$msg"
+			intervention_required "$msg"
 			return $OCF_FAILED_MASTER
 		fi
 	else
-		ocf_log err "error checking if master is running"
+		msg="error checking if master is running"
+		ocf_log err "$msg" ; test $debug && ocf_log notice "$msg"
 		return $OCF_ERR_GENERIC
 	fi
 }
@@ -458,7 +765,9 @@ lizardfs_master_reload() {
 	lizardfs_master_monitor
 	case $? in
 		$OCF_RUNNING_MASTER|$OCF_SUCCESS)
-			ocf_log debug "reloading LizardFS metadata server configuration"
+			msg="reloading LizardFS metadata server configuration"
+			ocf_log debug "$msg" ; test $debug && ocf_log notice "$msg"
+			test $debug && touch $debug_state_change_logs/lfs-`date +\%Y\%m\%d.\%H\%M\%S`-Reload
 			if ocf_run lizardfs_master reload ; then
 				return $OCF_SUCCESS
 			else
@@ -466,7 +775,8 @@ lizardfs_master_reload() {
 			fi
 		;;
 		*)
-			ocf_log error "no process running to reload"
+			msg="no process running to reload"
+			ocf_log error "$msg" ; test $debug && ocf_log notice "$msg"
 			return $OCF_ERR_GENERIC
 		;;
 	esac
@@ -485,7 +795,7 @@ ensure_dirs() {
 	fi
 	if [ ! -e "$data_dir"/metadata.mfs ] ; then
 		if [ ! -e "$data_dir"/metadata.mfs.back ] ; then
-			if ! echo "MFSM NEW" > "$data_dir"/metadata.mfs ; then
+			if ! echo "MFSM NEW" > "$data_dir"/metadata.mfs.empty ; then
 				return $OCF_ERR_PERM
 			fi
 		fi
@@ -500,21 +810,25 @@ lizardfs_master_validate() {
 	check_binary lizardfs-admin
 
 	if [[ "${failover_ip}" == "" ]] ; then
-		ocf_log err "MASTER_HOST not set in $OCF_RESKEY_master_cfg"
+		msg="MASTER_HOST not set in $OCF_RESKEY_master_cfg"
+		ocf_log err "$msg" ; test $debug && ocf_log notice "$msg"
 		exit $OCF_ERR_CONFIGURED
 	fi
 
 	if [ "x${admin_password}" = "x" ] ; then
-		ocf_log err "ADMIN_PASSWORD not set in $OCF_RESKEY_master_cfg"
+		msg="ADMIN_PASSWORD not set in $OCF_RESKEY_master_cfg"
+		ocf_log err "$msg" ; test $debug && ocf_log notice "$msg"
 		exit $OCF_ERR_CONFIGURED
 	fi
 
 	if ! [ -e "$OCF_RESKEY_master_cfg" ] ; then
-		ocf_log err "mfsmaster.cfg not found at $OCF_RESKEY_master_cfg"
+		msg="mfsmaster.cfg not found at $OCF_RESKEY_master_cfg"
+		ocf_log err "$msg" ; test $debug && ocf_log notice "$msg"
 		exit $OCF_ERR_CONFIGURED
 	fi
 	if ! [ -e "$exports_cfg" ] ; then
-		ocf_log err "mfsexports.cfg not found at $exports_cfg"
+		msg="mfsexports.cfg not found at $exports_cfg"
+		ocf_log err "$msg" ; test $debug && ocf_log notice "$msg"
 		exit $OCF_ERR_CONFIGURED
 	fi
 
@@ -549,7 +863,7 @@ case "$1" in
 	reload)   lizardfs_master_reload;;
 	promote)  lizardfs_master_promote;;
 	demote)   lizardfs_master_demote;;
-	# notify)   lizardfs_master_notify;;
+	notify)   lizardfs_master_notify;;
 	# We have already validated by now
 	validate-all) ;;
 	*)        usage; exit $OCF_ERR_UNIMPLEMENTED;;
